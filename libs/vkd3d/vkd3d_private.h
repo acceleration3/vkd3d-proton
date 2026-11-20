@@ -878,6 +878,7 @@ struct vkd3d_device_memory_allocation
     VkDeviceMemory vk_memory;
     uint32_t vk_memory_type;
     VkDeviceSize size;
+    bool imported;
 };
 
 struct vkd3d_memory_allocation
