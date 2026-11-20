@@ -4743,6 +4743,19 @@ struct vkd3d_vram_gate
 
 extern const struct vkd3d_vram_gate *vkd3d_vram_gate;
 
+struct vkd3d_teardown_order
+{
+    uint32_t size;
+    void *self;
+    int (*needed_by)(void *self, uint32_t driver_id);
+    void (*compiling)(void *self);
+    void (*compiled)(void *self);
+    void (*destroying)(void *self);
+    void (*destroyed)(void *self);
+};
+
+const struct vkd3d_teardown_order *vkd3d_teardown_order_for(const struct d3d12_device *device);
+
 struct vkd3d_memory_info
 {
     void *vram_account;
