@@ -6324,6 +6324,7 @@ const struct vkd3d_format *vkd3d_get_format(const struct d3d12_device *device,
         DXGI_FORMAT dxgi_format, bool depth_stencil);
 VkFormat vkd3d_internal_get_vk_format(const struct d3d12_device *device, DXGI_FORMAT dxgi_format);
 struct vkd3d_format_footprint vkd3d_format_footprint_for_plane(const struct vkd3d_format *format, unsigned int plane_idx);
+bool vkd3d_format_is_stored_per_pixel_of_a_pair(DXGI_FORMAT dxgi_format);
 
 HRESULT vkd3d_init_format_info(struct d3d12_device *device);
 void vkd3d_cleanup_format_info(struct d3d12_device *device);

@@ -141,6 +141,21 @@ static const struct vkd3d_format vkd3d_formats[] =
     /* P010 and P016 are functionally equivalent, there is no way to interpret data as R10X6 in D3D. */
     {DXGI_FORMAT_P010,                  VK_FORMAT_G16_B16R16_2PLANE_420_UNORM, 0,  1, 1,  1, PLANAR, 2, TYPELESS, false, p016_copy_footprints},
     {DXGI_FORMAT_P016,                  VK_FORMAT_G16_B16R16_2PLANE_420_UNORM, 0,  1, 1,  1, PLANAR, 2, TYPELESS, false, p016_copy_footprints},
+    {DXGI_FORMAT_420_OPAQUE,            VK_FORMAT_G8_B8R8_2PLANE_420_UNORM, 0,  1, 1,  1, PLANAR, 2, TYPELESS, false, nv12_copy_footprints},
+
+    {DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM, VK_FORMAT_A2B10G10R10_UNORM_PACK32, 4, 1, 1, 1, COLOR, 1},
+    {DXGI_FORMAT_AYUV,                  VK_FORMAT_R8G8B8A8_UNORM,           4,  1, 1,  1, COLOR, 1},
+    {DXGI_FORMAT_Y410,                  VK_FORMAT_A2B10G10R10_UNORM_PACK32, 4,  1, 1,  1, COLOR, 1},
+    {DXGI_FORMAT_Y416,                  VK_FORMAT_R16G16B16A16_UNORM,       8,  1, 1,  1, COLOR, 1},
+    {DXGI_FORMAT_AI44,                  VK_FORMAT_R8_UNORM,                 1,  1, 1,  1, COLOR, 1},
+    {DXGI_FORMAT_IA44,                  VK_FORMAT_R8_UNORM,                 1,  1, 1,  1, COLOR, 1},
+    {DXGI_FORMAT_P8,                    VK_FORMAT_R8_UNORM,                 1,  1, 1,  1, COLOR, 1},
+    {DXGI_FORMAT_A8P8,                  VK_FORMAT_R8G8_UNORM,               2,  1, 1,  1, COLOR, 1},
+    {DXGI_FORMAT_R8G8_B8G8_UNORM,       VK_FORMAT_R8G8_UNORM,               2,  1, 1,  1, COLOR, 1},
+    {DXGI_FORMAT_G8R8_G8B8_UNORM,       VK_FORMAT_R8G8_UNORM,               2,  1, 1,  1, COLOR, 1},
+    {DXGI_FORMAT_YUY2,                  VK_FORMAT_R8G8_UNORM,               2,  1, 1,  1, COLOR, 1},
+    {DXGI_FORMAT_Y210,                  VK_FORMAT_R16G16_UNORM,             4,  1, 1,  1, COLOR, 1},
+    {DXGI_FORMAT_Y216,                  VK_FORMAT_R16G16_UNORM,             4,  1, 1,  1, COLOR, 1},
 
     {DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE, VK_FORMAT_R32G32_UINT, 8,  1, 1,  1, COLOR, 1},
     {DXGI_FORMAT_SAMPLER_FEEDBACK_MIP_REGION_USED_OPAQUE, VK_FORMAT_R32G32_UINT, 8,  1, 1,  1, COLOR, 1},
@@ -571,6 +586,17 @@ dxgi_format_compatibility_list[] =
             {DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16_UINT, DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_R16G16_UINT}},
     {DXGI_FORMAT_P016,
             {DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16_UINT, DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_R16G16_UINT}},
+    {DXGI_FORMAT_420_OPAQUE,
+            {DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8G8_UINT}},
+    {DXGI_FORMAT_AYUV,
+            {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UINT},
+            DXGI_FORMAT_R8G8B8A8_UINT},
+    {DXGI_FORMAT_Y410,
+            {DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R10G10B10A2_UINT},
+            DXGI_FORMAT_R10G10B10A2_UINT},
+    {DXGI_FORMAT_Y416,
+            {DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R16G16B16A16_UINT},
+            DXGI_FORMAT_R16G16B16A16_UINT},
 
     /* Internal implementation detail. We desire 64-bit atomics and R32G32 UAV will trigger that compat
      * similar to other 64-bit images. */
@@ -942,6 +968,21 @@ const struct vkd3d_format *vkd3d_get_format(const struct d3d12_device *device,
     format = &device->formats[dxgi_format];
 
     return format->dxgi_format ? format : NULL;
+}
+
+bool vkd3d_format_is_stored_per_pixel_of_a_pair(DXGI_FORMAT dxgi_format)
+{
+    switch (dxgi_format)
+    {
+        case DXGI_FORMAT_R8G8_B8G8_UNORM:
+        case DXGI_FORMAT_G8R8_G8B8_UNORM:
+        case DXGI_FORMAT_YUY2:
+        case DXGI_FORMAT_Y210:
+        case DXGI_FORMAT_Y216:
+            return true;
+        default:
+            return false;
+    }
 }
 
 struct vkd3d_format_footprint vkd3d_format_footprint_for_plane(const struct vkd3d_format *format, unsigned int plane_idx)
