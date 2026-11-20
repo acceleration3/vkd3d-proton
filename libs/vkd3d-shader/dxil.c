@@ -428,6 +428,7 @@ static dxil_spv_bool dxil_output_remap(void *userdata, const dxil_spv_d3d_stream
     const struct vkd3d_shader_transform_feedback_element *xfb_element;
     unsigned int buffer_offsets[D3D12_SO_BUFFER_SLOT_COUNT];
     unsigned int i, stride;
+    bool matches;
 
     memset(buffer_offsets, 0, sizeof(buffer_offsets));
     xfb_element = NULL;
@@ -437,7 +438,13 @@ static dxil_spv_bool dxil_output_remap(void *userdata, const dxil_spv_d3d_stream
         const struct vkd3d_shader_transform_feedback_element *e = &xfb_info->elements[i];
 
         /* TODO: Stream index matching? */
-        if (!ascii_strcasecmp(e->semantic_name, d3d_output->semantic) && e->semantic_index == d3d_output->semantic_index)
+        if (e->semantic_name && !strcmp(e->semantic_name, "$register"))
+            matches = e->semantic_index == d3d_output->start_row;
+        else
+            matches = e->semantic_name && !ascii_strcasecmp(e->semantic_name, d3d_output->semantic) &&
+                    e->semantic_index == d3d_output->semantic_index;
+
+        if (matches)
         {
             xfb_element = e;
             break;
