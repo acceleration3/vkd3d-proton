@@ -4,6 +4,7 @@ EXPORTS
     D3D12GetInterface
     vkd3d_proton_open_heap_from_host_pointer
     vkd3d_proton_open_heap_from_dmabuf
+    vkd3d_proton_create_exported_heap
     vkd3d_proton_set_vram_gate
     vkd3d_proton_abandon_waits
     vkd3d_proton_export_image

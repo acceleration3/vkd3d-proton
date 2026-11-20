@@ -819,6 +819,7 @@ struct vkd3d_allocate_memory_info
      * the same pages as a dma-buf. */
     bool has_import_fd;
     int import_fd;
+    bool export_dma_buf;
     const void *pNext;
     uint32_t flags;
     VkBufferUsageFlags2KHR explicit_global_buffer_usage;
@@ -832,6 +833,7 @@ struct vkd3d_allocate_heap_memory_info
     void *host_ptr;
     bool has_import_fd;
     int import_fd;
+    bool export_dma_buf;
     uint32_t extra_allocation_flags;
     float vk_memory_priority;
     VkBufferUsageFlags2KHR explicit_global_buffer_usage;
@@ -1076,6 +1078,8 @@ struct d3d12_heap
 
 HRESULT d3d12_heap_create(struct d3d12_device *device, const D3D12_HEAP_DESC *desc,
         void *host_address, struct d3d12_heap **heap);
+HRESULT d3d12_heap_create_exported(struct d3d12_device *device, const D3D12_HEAP_DESC *desc,
+        struct d3d12_heap **heap);
 HRESULT d3d12_heap_create_imported(struct d3d12_device *device, const D3D12_HEAP_DESC *desc,
         void *host_address, int import_fd, struct d3d12_heap **heap);
 HRESULT d3d12_device_validate_custom_heap_type(struct d3d12_device *device,
