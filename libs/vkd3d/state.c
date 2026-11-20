@@ -4419,6 +4419,8 @@ vkd3d_dynamic_state_list[] =
     { VKD3D_DYNAMIC_STATE_DEPTH_BIAS,            VK_DYNAMIC_STATE_DEPTH_BIAS },
     { VKD3D_DYNAMIC_STATE_DEPTH_BIAS,            VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE },
     { VKD3D_DYNAMIC_STATE_RASTERIZATION_SAMPLES, VK_DYNAMIC_STATE_RASTERIZATION_SAMPLES_EXT },
+    { VKD3D_DYNAMIC_STATE_SAMPLE_LOCATIONS,      VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_ENABLE_EXT },
+    { VKD3D_DYNAMIC_STATE_SAMPLE_LOCATIONS,      VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT },
 };
 
 uint32_t vkd3d_init_dynamic_state_array(VkDynamicState *dynamic_states, uint32_t dynamic_state_flags)
@@ -4812,6 +4814,10 @@ uint32_t d3d12_graphics_pipeline_state_get_dynamic_state_flags(struct d3d12_pipe
     if (d3d12_graphics_pipeline_needs_dynamic_rasterization_samples(&state->graphics) &&
             state->device->device_info.extended_dynamic_state3_features.extendedDynamicState3RasterizationSamples)
         dynamic_state_flags |= VKD3D_DYNAMIC_STATE_RASTERIZATION_SAMPLES;
+
+    if ((dynamic_state_flags & VKD3D_DYNAMIC_STATE_RASTERIZATION_SAMPLES) &&
+            state->device->d3d12_caps.options2.ProgrammableSamplePositionsTier)
+        dynamic_state_flags |= VKD3D_DYNAMIC_STATE_SAMPLE_LOCATIONS;
 
     return dynamic_state_flags;
 }
