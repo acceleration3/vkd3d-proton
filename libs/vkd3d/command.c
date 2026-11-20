@@ -22049,6 +22049,64 @@ static void d3d12_command_list_build_raytracing_opacity_micromap_array(struct d3
     VKD3D_BREADCRUMB_COMMAND(BUILD_OMM);
 }
 
+static bool d3d12_command_list_translate_rtas_instances(struct d3d12_command_list *list,
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *inputs)
+{
+    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
+    struct vkd3d_rtas_instance_translate_info pipeline_info;
+    struct vkd3d_rtas_instance_translate_args args;
+    struct vkd3d_scratch_allocation scratch;
+    VkMemoryBarrier2 vk_barrier;
+    VkDependencyInfo dep_info;
+
+    vkd3d_meta_get_rtas_instance_translate_pipeline(&list->device->meta_ops, &pipeline_info);
+
+    if (!d3d12_command_allocator_allocate_scratch_memory(list->allocator,
+            VKD3D_SCRATCH_POOL_KIND_DEVICE_STORAGE,
+            (VkDeviceSize)inputs->NumDescs * sizeof(D3D12_RAYTRACING_INSTANCE_DESC), 256, ~0u, &scratch))
+        return false;
+
+    d3d12_command_list_end_current_render_pass(list, false);
+    d3d12_command_list_end_transfer_batch(list, false);
+    d3d12_command_list_invalidate_current_pipeline(list, true);
+    d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, true, &list->graphics_bindings);
+
+    args.source_va = inputs->InstanceDescs;
+    args.output_va = scratch.va;
+    args.translation_va = list->indirect_va_table;
+    args.instance_count = inputs->NumDescs;
+    args.pad = 0;
+
+    VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+            pipeline_info.vk_pipeline));
+    VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, pipeline_info.vk_pipeline_layout,
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args));
+
+    {
+        uint32_t groups = vkd3d_compute_workgroup_count(inputs->NumDescs,
+                vkd3d_meta_get_rtas_instance_translate_workgroup_size());
+        uint32_t groups_x = groups < 65535u ? groups : 65535u;
+        uint32_t groups_y = (groups + 65534u) / 65535u;
+        VK_CALL(vkCmdDispatch(list->cmd.vk_command_buffer, groups_x, groups_y, 1));
+    }
+
+    memset(&vk_barrier, 0, sizeof(vk_barrier));
+    vk_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+    vk_barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_SHADER_READ_BIT;
+
+    memset(&dep_info, 0, sizeof(dep_info));
+    dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep_info.memoryBarrierCount = 1;
+    dep_info.pMemoryBarriers = &vk_barrier;
+    VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
+
+    inputs->InstanceDescs = scratch.va;
+    return true;
+}
+
 static void d3d12_command_list_build_raytracing_blas_and_tlas(struct d3d12_command_list *list,
         const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC *desc, UINT num_postbuild_info_descs,
         const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC *postbuild_info_descs)
@@ -22265,6 +22323,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_BuildRaytracingAccelerationStru
 {
     struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
     struct d3d12_rtas_batch_state *rtas_batch = &list->rtas_batch;
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC translated;
     bool assume_hazard;
 
     TRACE("iface %p, desc %p, num_postbuild_info_descs %u, postbuild_info_descs %p\n",
@@ -22279,6 +22338,18 @@ static void STDMETHODCALLTYPE d3d12_command_list_BuildRaytracingAccelerationStru
     {
         WARN("Acceleration structure is not supported. Calling this is invalid.\n");
         return;
+    }
+
+    if (list->indirect_va_table && desc->Inputs.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL &&
+            desc->Inputs.NumDescs && desc->Inputs.DescsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY)
+    {
+        translated = *desc;
+        if (!d3d12_command_list_translate_rtas_instances(list, &translated.Inputs))
+        {
+            ERR("Failed to translate the instances. Dropping call.\n");
+            return;
+        }
+        desc = &translated;
     }
 
     list->cmd.estimated_cost += VKD3D_COMMAND_COST_HIGH;
