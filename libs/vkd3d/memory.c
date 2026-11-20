@@ -18,6 +18,9 @@
 
 #define VKD3D_DBG_CHANNEL VKD3D_DBG_CHANNEL_API
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include "vkd3d_private.h"
 #include "vkd3d_descriptor_debug.h"
 
@@ -1235,12 +1238,16 @@ static HRESULT vkd3d_import_host_memory(struct d3d12_device *device, void *host_
     import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
     import_info.pHostPointer = host_address;
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(USE_HOST_IMPORT_FALLBACK) ||
-        FAILED(hr = vkd3d_try_allocate_device_memory(device, size,
-            type_flags, type_mask, &import_info, true, allocation)))
+    if (!VKD3D_CONFIG_FLAG_IS_SET(USE_HOST_IMPORT_FALLBACK))
     {
-        if (FAILED(hr))
+        /* A failed import fails: memory that only looks like the caller's
+         * would take writes the caller never sees. */
+        if (FAILED(hr = vkd3d_try_allocate_device_memory(device, size,
+                type_flags, type_mask, &import_info, true, allocation)))
             WARN("Failed to import host memory, hr %#x.\n", (int)hr);
+    }
+    else
+    {
         /* If we failed, fall back to a host-visible allocation. Generally
          * the app will access the memory thorugh the main host pointer,
          * so it's fine. */
@@ -1250,6 +1257,50 @@ static HRESULT vkd3d_import_host_memory(struct d3d12_device *device, void *host_
     }
 
     return hr;
+}
+
+/* The dma-buf `fd` imported as device memory; Vulkan takes a duplicate, and
+ * the caller keeps its own descriptor. */
+static HRESULT vkd3d_import_fd_memory(struct d3d12_device *device, int fd,
+        VkDeviceSize size, VkMemoryPropertyFlags type_flags, uint32_t type_mask,
+        void *pNext, struct vkd3d_device_memory_allocation *allocation)
+{
+#ifdef _WIN32
+    return E_NOTIMPL;
+#else
+    const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
+    VkMemoryFdPropertiesKHR fd_properties;
+    VkImportMemoryFdInfoKHR import_info;
+    int owned;
+    HRESULT hr;
+
+    if (!device->vk_info.KHR_external_memory_fd || !device->vk_info.EXT_external_memory_dma_buf)
+        return E_NOTIMPL;
+
+    fd_properties.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR;
+    fd_properties.pNext = NULL;
+    if (VK_CALL(vkGetMemoryFdPropertiesKHR(device->vk_device,
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fd_properties)) != VK_SUCCESS)
+        return E_INVALIDARG;
+
+    if ((owned = dup(fd)) < 0)
+        return E_OUTOFMEMORY;
+
+    import_info.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+    import_info.pNext = pNext;
+    import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    import_info.fd = owned;
+
+    /* The memory exists: no budget refuses it. A failure leaves the fd with the caller. */
+    if (FAILED(hr = vkd3d_try_allocate_device_memory(device, size, type_flags,
+            type_mask & fd_properties.memoryTypeBits, &import_info, false, allocation)))
+    {
+        close(owned);
+        WARN("Failed to import dma-buf memory, hr %#x, memory types %#x of %#x.\n",
+                hr, fd_properties.memoryTypeBits, type_mask);
+    }
+    return hr;
+#endif
 }
 
 static HRESULT vkd3d_allocation_assign_gpu_address(struct vkd3d_memory_allocation *allocation,
@@ -1596,7 +1647,12 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
         vk_prepend_struct(&flags_info, &priority_info);
     }
 
-    if (host_ptr)
+    if (host_ptr && info->has_import_fd)
+    {
+        hr = vkd3d_import_fd_memory(device, info->import_fd, memory_requirements.size,
+                type_flags, type_mask, &flags_info, &allocation->device_allocation);
+    }
+    else if (host_ptr)
     {
         hr = vkd3d_import_host_memory(device, host_ptr, memory_requirements.size,
                 type_flags, type_mask, &flags_info, &allocation->device_allocation);
@@ -2335,6 +2391,8 @@ HRESULT vkd3d_allocate_heap_memory(struct d3d12_device *device, struct vkd3d_mem
     alloc_info.heap_properties = info->heap_desc.Properties;
     alloc_info.heap_flags = info->heap_desc.Flags;
     alloc_info.host_ptr = info->host_ptr;
+    alloc_info.has_import_fd = info->has_import_fd;
+    alloc_info.import_fd = info->import_fd;
     alloc_info.vk_memory_priority = info->vk_memory_priority;
     alloc_info.explicit_global_buffer_usage = info->explicit_global_buffer_usage;
 

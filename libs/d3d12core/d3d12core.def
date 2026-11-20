@@ -2,4 +2,6 @@ LIBRARY d3d12core.dll
 
 EXPORTS
     D3D12GetInterface
+    vkd3d_proton_open_heap_from_host_pointer
+    vkd3d_proton_open_heap_from_dmabuf
     D3D12SDKVersion DATA PRIVATE

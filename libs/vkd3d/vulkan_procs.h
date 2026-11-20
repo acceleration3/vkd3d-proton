@@ -295,6 +295,9 @@ VK_DEVICE_EXT_PFN(vkCmdSetRasterizationSamplesEXT)
 /* VK_EXT_external_memory_host */
 VK_DEVICE_EXT_PFN(vkGetMemoryHostPointerPropertiesEXT)
 
+/* VK_KHR_external_memory_fd */
+VK_DEVICE_EXT_PFN(vkGetMemoryFdPropertiesKHR)
+
 /* VK_EXT_mesh_shader */
 VK_DEVICE_EXT_PFN(vkCmdDrawMeshTasksEXT)
 VK_DEVICE_EXT_PFN(vkCmdDrawMeshTasksIndirectEXT)

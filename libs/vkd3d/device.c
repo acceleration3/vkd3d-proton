@@ -121,6 +121,8 @@ static const struct vkd3d_optional_extension_info optional_device_extensions[] =
     VK_EXTENSION(EXT_EXTENDED_DYNAMIC_STATE_2, EXT_extended_dynamic_state2),
     VK_EXTENSION(EXT_EXTENDED_DYNAMIC_STATE_3, EXT_extended_dynamic_state3),
     VK_EXTENSION(EXT_EXTERNAL_MEMORY_HOST, EXT_external_memory_host),
+    VK_EXTENSION(KHR_EXTERNAL_MEMORY_FD, KHR_external_memory_fd),
+    VK_EXTENSION(EXT_EXTERNAL_MEMORY_DMA_BUF, EXT_external_memory_dma_buf),
     VK_EXTENSION(EXT_SHADER_IMAGE_ATOMIC_INT64, EXT_shader_image_atomic_int64),
     VK_EXTENSION(EXT_MESH_SHADER, EXT_mesh_shader),
     VK_EXTENSION(EXT_MUTABLE_DESCRIPTOR_TYPE, EXT_mutable_descriptor_type),
@@ -7624,6 +7626,35 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromAddress(d3d12_
     FIXME("OpenExistingHeapFromAddress can only be implemented in native Win32.\n");
     return E_NOTIMPL;
 #endif
+}
+
+HRESULT vkd3d_open_heap_from_dmabuf(ID3D12Device *device, void *address, int fd, UINT64 size,
+        REFIID riid, void **heap)
+{
+    struct d3d12_heap *object;
+    D3D12_HEAP_DESC heap_desc;
+    HRESULT hr;
+
+    if (!device || !heap || !address || fd < 0 || !size)
+        return E_INVALIDARG;
+
+    memset(&heap_desc, 0, sizeof(heap_desc));
+    heap_desc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+    heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
+    heap_desc.Properties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_BACK;
+    heap_desc.Properties.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
+    heap_desc.Properties.Type = D3D12_HEAP_TYPE_CUSTOM;
+    heap_desc.Properties.CreationNodeMask = 1;
+    heap_desc.Properties.VisibleNodeMask = 1;
+    heap_desc.SizeInBytes = size;
+
+    if (FAILED(hr = d3d12_heap_create_imported(impl_from_ID3D12Device((d3d12_device_iface *)device),
+            &heap_desc, address, fd, &object)))
+    {
+        *heap = NULL;
+        return hr;
+    }
+    return return_interface(&object->ID3D12Heap_iface, &IID_ID3D12Heap, riid, heap);
 }
 
 static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromFileMapping(d3d12_device_iface *iface,
