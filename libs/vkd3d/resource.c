@@ -4162,6 +4162,9 @@ HRESULT d3d12_resource_create_borrowed(struct d3d12_device *device, const D3D12_
     if (!object->desc.MipLevels)
         object->desc.MipLevels = max_miplevel_count(desc);
 
+    if (device->concurrent_transfer_queue)
+        object->flags |= VKD3D_RESOURCE_COPY_QUEUE_COMPATIBLE;
+
     if (d3d12_device_supports_unified_layouts(device))
     {
         object->flags |= VKD3D_RESOURCE_GENERAL_LAYOUT;

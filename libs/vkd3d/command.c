@@ -2655,6 +2655,9 @@ static void d3d12_command_list_consider_new_sequence(struct d3d12_command_list *
 
 static void d3d12_command_list_copy_queue_fallback(struct d3d12_command_list *list)
 {
+    if (!list->allocator->fallback_pool.vk_command_pool)
+        return;
+
     if (!list->cmd.iterations[list->cmd.iteration_count - 1].fallback)
     {
         d3d12_command_list_end_transfer_batch(list);
