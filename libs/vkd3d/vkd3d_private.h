@@ -167,6 +167,8 @@ struct vkd3d_vulkan_info
     bool EXT_extended_dynamic_state2;
     bool EXT_extended_dynamic_state3;
     bool EXT_external_memory_host;
+    bool KHR_external_memory_fd;
+    bool EXT_external_memory_dma_buf;
     bool EXT_shader_image_atomic_int64;
     bool EXT_mesh_shader;
     bool EXT_mutable_descriptor_type; /* EXT promotion of VALVE one. */
@@ -768,6 +770,11 @@ struct vkd3d_allocate_memory_info
     D3D12_HEAP_PROPERTIES heap_properties;
     D3D12_HEAP_FLAGS heap_flags;
     void *host_ptr;
+    /* A dma-buf of the pages at host_ptr, imported instead of the pointer
+     * when set: a driver that refuses a userptr over file-backed pages takes
+     * the same pages as a dma-buf. */
+    bool has_import_fd;
+    int import_fd;
     const void *pNext;
     uint32_t flags;
     VkBufferUsageFlags2KHR explicit_global_buffer_usage;
@@ -779,6 +786,8 @@ struct vkd3d_allocate_heap_memory_info
 {
     D3D12_HEAP_DESC heap_desc;
     void *host_ptr;
+    bool has_import_fd;
+    int import_fd;
     uint32_t extra_allocation_flags;
     float vk_memory_priority;
     VkBufferUsageFlags2KHR explicit_global_buffer_usage;
@@ -1010,6 +1019,8 @@ struct d3d12_heap
 
 HRESULT d3d12_heap_create(struct d3d12_device *device, const D3D12_HEAP_DESC *desc,
         void *host_address, struct d3d12_heap **heap);
+HRESULT d3d12_heap_create_imported(struct d3d12_device *device, const D3D12_HEAP_DESC *desc,
+        void *host_address, int import_fd, struct d3d12_heap **heap);
 HRESULT d3d12_device_validate_custom_heap_type(struct d3d12_device *device,
         const D3D12_HEAP_PROPERTIES *heap_properties);
 
@@ -5219,7 +5230,7 @@ struct vkd3d_device_frame_markers
 };
 
 /* ID3D12Device */
-typedef ID3D12Device12 d3d12_device_iface;
+typedef ID3D12Device13 d3d12_device_iface;
 
 struct vkd3d_descriptor_qa_global_info;
 struct vkd3d_descriptor_qa_heap_buffer_data;
@@ -5734,7 +5745,7 @@ static inline const struct vkd3d_memory_info_domain *d3d12_device_get_memory_inf
 
 static inline HRESULT d3d12_device_query_interface(struct d3d12_device *device, REFIID iid, void **object)
 {
-    return ID3D12Device12_QueryInterface(&device->ID3D12Device_iface, iid, object);
+    return ID3D12Device13_QueryInterface(&device->ID3D12Device_iface, iid, object);
 }
 
 ULONG d3d12_device_add_ref_common(struct d3d12_device *device);

@@ -190,6 +190,11 @@ void vkd3d_enqueue_initial_transition(ID3D12CommandQueue *queue, ID3D12Resource 
 ULONG vkd3d_resource_decref(ID3D12Resource *resource);
 ULONG vkd3d_resource_incref(ID3D12Resource *resource);
 
+/* A buffer heap over pages mapped at `address`, imported as the dma-buf `fd`
+ * (which the caller keeps). */
+HRESULT vkd3d_open_heap_from_dmabuf(ID3D12Device *device, void *address, int fd, UINT64 size,
+        REFIID iid, void **heap);
+
 HRESULT vkd3d_serialize_root_signature(const D3D12_ROOT_SIGNATURE_DESC *desc,
         D3D_ROOT_SIGNATURE_VERSION version, ID3DBlob **blob, ID3DBlob **error_blob);
 HRESULT vkd3d_create_root_signature_deserializer(const void *data, SIZE_T data_size,

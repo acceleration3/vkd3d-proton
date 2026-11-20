@@ -1350,3 +1350,30 @@ HRESULT WINAPI DLLEXPORT D3D12GetInterface(REFCLSID rcslid, REFIID iid, void **d
 /* Just expose the latest stable AgilitySDK version.
  * This is actually exported as a UINT and not a function it seems. */
 DLLEXPORT const UINT D3D12SDKVersion = D3D12_SDK_VERSION;
+
+/* accel-virt: ID3D12Device13::OpenExistingHeapFromAddress1 as a plain C
+ * export, for an embedder whose headers predate ID3D12Device13 - its executor
+ * imports guest memory as upload and readback heaps through this. */
+/* The same heap over a dma-buf of those pages - `address` is where the caller
+ * maps it - for a Vulkan driver that refuses a userptr over file-backed memory.
+ * The caller keeps `fd`. */
+HRESULT WINAPI DLLEXPORT vkd3d_proton_open_heap_from_dmabuf(ID3D12Device *device, void *address, int fd,
+        UINT64 size, REFIID iid, void **heap)
+{
+    return vkd3d_open_heap_from_dmabuf(device, address, fd, size, iid, heap);
+}
+
+HRESULT WINAPI DLLEXPORT vkd3d_proton_open_heap_from_host_pointer(ID3D12Device *device, void *address,
+        UINT64 size, REFIID iid, void **heap)
+{
+    ID3D12Device13 *device13;
+    HRESULT hr;
+
+    if (!device || !heap)
+        return E_INVALIDARG;
+    if (FAILED(hr = ID3D12Device_QueryInterface(device, &IID_ID3D12Device13, (void **)&device13)))
+        return hr;
+    hr = ID3D12Device13_OpenExistingHeapFromAddress1(device13, address, (SIZE_T)size, iid, heap);
+    ID3D12Device13_Release(device13);
+    return hr;
+}
