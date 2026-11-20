@@ -3171,30 +3171,33 @@ static void d3d12_device_cleanup_vendor_hacks(struct d3d12_device *device)
 #endif
 }
 
-static const struct vkd3d_teardown_order *vkd3d_teardown_order;
+static const struct vkd3d_lifecycle_gates *vkd3d_lifecycle_gates;
 
-void vkd3d_set_teardown_order(const void *order)
+void vkd3d_set_lifecycle_gates(const void *gates)
 {
-    const struct vkd3d_teardown_order *given = order;
-    vkd3d_teardown_order = given && given->size >= sizeof(*given) ? given : NULL;
+    const struct vkd3d_lifecycle_gates *given = gates;
+    vkd3d_lifecycle_gates = given && given->size >= sizeof(*given) ? given : NULL;
 }
 
-const struct vkd3d_teardown_order *vkd3d_teardown_order_for(const struct d3d12_device *device)
+const struct vkd3d_lifecycle_gates *vkd3d_lifecycle_gate_of(const struct d3d12_device *device, void **gate)
 {
-    const struct vkd3d_teardown_order *order = vkd3d_teardown_order;
-    if (!order || !order->needed_by(order->self, device->device_info.vulkan_1_2_properties.driverID))
-        return NULL;
-    return order;
+    const struct vkd3d_lifecycle_gates *gates = vkd3d_lifecycle_gates;
+    *gate = gates ? gates->gate_of(gates->self, device->device_info.vulkan_1_1_properties.deviceUUID) : NULL;
+    return *gate ? gates : NULL;
 }
 
 static void vkd3d_destroy_vk_device(struct d3d12_device *device, VkDevice vk_device)
 {
-    const struct vkd3d_teardown_order *order = vkd3d_teardown_order_for(device);
-    if (order)
-        order->destroying(order->self);
+    void *gate;
+    const struct vkd3d_lifecycle_gates *gates = vkd3d_lifecycle_gate_of(device, &gate);
+    if (gates && !gates->enter(gate))
+    {
+        ERR("Vulkan device leaked instead of destroyed, the embedder's lifecycle gate stayed held.\n");
+        return;
+    }
     device->vk_procs.vkDestroyDevice(vk_device, NULL);
-    if (order)
-        order->destroyed(order->self);
+    if (gates)
+        gates->leave(gate);
 }
 
 static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
@@ -3207,11 +3210,13 @@ static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
     VkPhysicalDevice physical_device;
     VkDeviceCreateInfo device_info;
     VkDeviceQueueGlobalPriorityCreateInfoKHR queue_priorities[VKD3D_QUEUE_FAMILY_COUNT];
+    const struct vkd3d_lifecycle_gates *lifecycle_gates;
     VkExtensionProperties *host_extensions = NULL;
     uint32_t host_extension_count = 0;
     uint32_t original_extension_count;
     bool low_priority = false;
     unsigned int device_index;
+    void *lifecycle_gate;
     uint32_t extension_count;
     const char **extensions;
     VkDevice vk_device;
@@ -3348,6 +3353,14 @@ static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
         extensions[device_info.enabledExtensionCount++] = VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME;
     }
 
+    lifecycle_gates = vkd3d_lifecycle_gate_of(device, &lifecycle_gate);
+    if (lifecycle_gates && !lifecycle_gates->enter(lifecycle_gate))
+    {
+        ERR("Failed to create Vulkan device, the embedder's lifecycle gate stayed held.\n");
+        vkd3d_free((void *)extensions);
+        return E_FAIL;
+    }
+
     vr = VK_CALL(vkCreateDevice(physical_device, &device_info, NULL, &vk_device));
     if (vr < 0 && low_priority)
     {
@@ -3362,6 +3375,9 @@ static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
         WARN("Disabled extensions that can cause Vulkan device creation to fail, retrying.\n");
         vr = VK_CALL(vkCreateDevice(physical_device, &device_info, NULL, &vk_device));
     }
+
+    if (lifecycle_gates)
+        lifecycle_gates->leave(lifecycle_gate);
 
     if (vr < 0)
     {
