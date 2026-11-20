@@ -3197,7 +3197,11 @@ static void vkd3d_destroy_vk_device(struct d3d12_device *device, VkDevice vk_dev
     }
     device->vk_procs.vkDestroyDevice(vk_device, NULL);
     if (gates)
+    {
+        gates->return_device(gate, device->lifecycle_slots);
+        device->lifecycle_slots = 0;
         gates->leave(gate);
+    }
 }
 
 static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
@@ -3361,6 +3365,16 @@ static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
         return E_FAIL;
     }
 
+    device->lifecycle_slots = 0;
+    if (lifecycle_gates && !lifecycle_gates->admit_device(lifecycle_gate, physical_device, &device_info,
+            &device->lifecycle_slots))
+    {
+        lifecycle_gates->leave(lifecycle_gate);
+        ERR("Failed to create Vulkan device, the driver has no room left for its queues in this process.\n");
+        vkd3d_free((void *)extensions);
+        return E_OUTOFMEMORY;
+    }
+
     vr = VK_CALL(vkCreateDevice(physical_device, &device_info, NULL, &vk_device));
     if (vr < 0 && low_priority)
     {
@@ -3377,7 +3391,14 @@ static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
     }
 
     if (lifecycle_gates)
+    {
+        if (vr < 0)
+        {
+            lifecycle_gates->return_device(lifecycle_gate, device->lifecycle_slots);
+            device->lifecycle_slots = 0;
+        }
         lifecycle_gates->leave(lifecycle_gate);
+    }
 
     if (vr < 0)
     {

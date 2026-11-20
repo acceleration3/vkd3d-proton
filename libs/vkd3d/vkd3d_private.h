@@ -4790,6 +4790,9 @@ struct vkd3d_lifecycle_gates
     void (*leave)(void *gate);
     int (*share)(void *gate);
     void (*unshare)(void *gate);
+    int (*admit_device)(void *gate, VkPhysicalDevice physical_device, const VkDeviceCreateInfo *create_info,
+            uint32_t *slots);
+    void (*return_device)(void *gate, uint32_t slots);
 };
 
 const struct vkd3d_lifecycle_gates *vkd3d_lifecycle_gate_of(const struct d3d12_device *device, void **gate);
@@ -6073,6 +6076,7 @@ struct d3d12_device
     LONG refcount;
 
     VkDevice vk_device;
+    uint32_t lifecycle_slots;
     uint32_t api_version;
     VkPhysicalDevice vk_physical_device;
     struct vkd3d_vk_device_procs vk_procs;
