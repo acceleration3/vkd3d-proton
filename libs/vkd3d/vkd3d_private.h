@@ -1057,6 +1057,7 @@ struct d3d12_heap
 
     D3D12_HEAP_DESC desc;
     struct vkd3d_memory_allocation allocation;
+    bool embedder_import;
 
     priority_info priority;
 
