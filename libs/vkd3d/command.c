@@ -7805,7 +7805,7 @@ static bool d3d12_command_list_update_graphics_pipeline(struct d3d12_command_lis
      * not track this as part of command list state. This is only relevant if the PSO statically
      * enables any DSV or RTV but none are bound to the command list. */
     if (!list->dynamic_state.rasterization_samples)
-        list->dynamic_state.dirty_flags |= VKD3D_DYNAMIC_STATE_RASTERIZATION_SAMPLES;
+        list->dynamic_state.dirty_flags |= VKD3D_DYNAMIC_STATE_MULTISAMPLE_MASK;
 
     list->dynamic_state.active_flags = new_active_flags;
     list->current_pipeline = vk_pipeline;
@@ -8710,14 +8710,38 @@ static void d3d12_command_list_update_dynamic_state(struct d3d12_command_list *l
                 dyn_state->fragment_shading_rate.combiner_ops));
     }
 
-    if (dyn_state->dirty_flags & VKD3D_DYNAMIC_STATE_RASTERIZATION_SAMPLES)
+    if (dyn_state->dirty_flags & VKD3D_DYNAMIC_STATE_MULTISAMPLE_MASK)
     {
         rasterization_samples = dyn_state->rasterization_samples;
 
         if (!rasterization_samples)
             rasterization_samples = list->state->graphics.ms_desc.rasterizationSamples;
 
-        VK_CALL(vkCmdSetRasterizationSamplesEXT(list->cmd.vk_command_buffer, rasterization_samples));
+        if (dyn_state->dirty_flags & VKD3D_DYNAMIC_STATE_RASTERIZATION_SAMPLES)
+            VK_CALL(vkCmdSetRasterizationSamplesEXT(list->cmd.vk_command_buffer, rasterization_samples));
+
+        if (dyn_state->dirty_flags & VKD3D_DYNAMIC_STATE_SAMPLE_LOCATIONS)
+        {
+            VkSampleLocationsInfoEXT locations_info;
+            bool enable;
+
+            enable = dyn_state->sample_locations.samples_per_pixel &&
+                    dyn_state->sample_locations.samples_per_pixel == rasterization_samples;
+
+            VK_CALL(vkCmdSetSampleLocationsEnableEXT(list->cmd.vk_command_buffer, enable));
+
+            if (enable)
+            {
+                locations_info.sType = VK_STRUCTURE_TYPE_SAMPLE_LOCATIONS_INFO_EXT;
+                locations_info.pNext = NULL;
+                locations_info.sampleLocationsPerPixel = rasterization_samples;
+                locations_info.sampleLocationGridSize = dyn_state->sample_locations.grid;
+                locations_info.sampleLocationsCount = rasterization_samples *
+                        dyn_state->sample_locations.grid.width * dyn_state->sample_locations.grid.height;
+                locations_info.pSampleLocations = dyn_state->sample_locations.locations;
+                VK_CALL(vkCmdSetSampleLocationsEXT(list->cmd.vk_command_buffer, &locations_info));
+            }
+        }
     }
 
     dyn_state->dirty_flags = 0;
@@ -15522,7 +15546,7 @@ static void d3d12_command_list_recompute_fb_size(struct d3d12_command_list *list
     if (list->dynamic_state.rasterization_samples != sample_count)
     {
         list->dynamic_state.rasterization_samples = sample_count;
-        list->dynamic_state.dirty_flags |= VKD3D_DYNAMIC_STATE_RASTERIZATION_SAMPLES;
+        list->dynamic_state.dirty_flags |= VKD3D_DYNAMIC_STATE_MULTISAMPLE_MASK;
 
         if (!list->device->device_info.extended_dynamic_state3_features.extendedDynamicState3RasterizationSamples)
             d3d12_command_list_invalidate_current_pipeline(list, false);
@@ -19363,8 +19387,67 @@ static void STDMETHODCALLTYPE d3d12_command_list_OMSetDepthBounds(d3d12_command_
 static void STDMETHODCALLTYPE d3d12_command_list_SetSamplePositions(d3d12_command_list_iface *iface,
         UINT sample_count, UINT pixel_count, D3D12_SAMPLE_POSITION *sample_positions)
 {
-    FIXME("iface %p, sample_count %u, pixel_count %u, sample_positions %p stub!\n",
+    struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
+    struct vkd3d_dynamic_state *dyn_state = &list->dynamic_state;
+    unsigned int tile_width, tile_height, x, y, s;
+    const struct vkd3d_physical_device_info *info;
+    VkExtent2D grid;
+
+    TRACE("iface %p, sample_count %u, pixel_count %u, sample_positions %p.\n",
             iface, sample_count, pixel_count, sample_positions);
+
+    info = &list->device->device_info;
+
+    if (!sample_count && !pixel_count)
+    {
+        dyn_state->sample_locations.samples_per_pixel = 0;
+        dyn_state->dirty_flags |= VKD3D_DYNAMIC_STATE_SAMPLE_LOCATIONS;
+        return;
+    }
+
+    if (!list->device->d3d12_caps.options2.ProgrammableSamplePositionsTier)
+    {
+        WARN("Programmable sample positions are not supported.\n");
+        return;
+    }
+
+    if (!sample_positions || !sample_count || sample_count > 16 || !is_power_of_two(sample_count) ||
+            (pixel_count != 1 && pixel_count != 4) ||
+            (pixel_count == 4 &&
+            list->device->d3d12_caps.options2.ProgrammableSamplePositionsTier < D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_2))
+    {
+        WARN("Invalid sample positions: sample count %u, pixel count %u.\n", sample_count, pixel_count);
+        return;
+    }
+
+    grid = info->sample_location_grids[vkd3d_log2i(sample_count)];
+    if (!grid.width)
+    {
+        WARN("Sample count %u has no programmable positions.\n", sample_count);
+        return;
+    }
+
+    tile_width = pixel_count == 4 ? 2 : 1;
+    tile_height = pixel_count == 4 ? 2 : 1;
+
+    for (y = 0; y < grid.height; y++)
+    {
+        for (x = 0; x < grid.width; x++)
+        {
+            const D3D12_SAMPLE_POSITION *source = &sample_positions[((y % tile_height) * tile_width + (x % tile_width)) * sample_count];
+            VkSampleLocationEXT *target = &dyn_state->sample_locations.locations[(y * grid.width + x) * sample_count];
+
+            for (s = 0; s < sample_count; s++)
+            {
+                target[s].x = 0.5f + (float)max(min(source[s].X, 7), -8) / 16.0f;
+                target[s].y = 0.5f + (float)max(min(source[s].Y, 7), -8) / 16.0f;
+            }
+        }
+    }
+
+    dyn_state->sample_locations.samples_per_pixel = sample_count;
+    dyn_state->sample_locations.grid = grid;
+    dyn_state->dirty_flags |= VKD3D_DYNAMIC_STATE_SAMPLE_LOCATIONS;
 }
 
 static bool d3d12_command_list_validate_sampler_feedback_transcode(

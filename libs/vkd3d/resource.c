@@ -886,6 +886,11 @@ static HRESULT vkd3d_get_image_create_info(struct d3d12_device *device,
         image_info->flags |= VK_IMAGE_CREATE_ALIAS_SINGLE_LAYER_DESCRIPTOR_BIT_KHR;
     }
 
+    if (device->d3d12_caps.options2.ProgrammableSamplePositionsTier && desc->SampleDesc.Count > 1 &&
+            (desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) &&
+            (format->vk_aspect_mask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)))
+        image_info->flags |= VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT;
+
     if (sparse_resource)
     {
         image_info->flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT |

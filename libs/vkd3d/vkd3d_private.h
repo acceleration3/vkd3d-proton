@@ -177,6 +177,7 @@ struct vkd3d_vulkan_info
     bool EXT_vertex_attribute_divisor;
     bool EXT_extended_dynamic_state2;
     bool EXT_extended_dynamic_state3;
+    bool EXT_sample_locations;
     bool EXT_external_memory_host;
     bool KHR_external_memory_fd;
     bool EXT_external_memory_dma_buf;
@@ -2220,7 +2221,12 @@ enum vkd3d_dynamic_state_flag
     VKD3D_DYNAMIC_STATE_STENCIL_WRITE_MASK    = (1 << 11),
     VKD3D_DYNAMIC_STATE_DEPTH_BIAS            = (1 << 12),
     VKD3D_DYNAMIC_STATE_RASTERIZATION_SAMPLES = (1 << 13),
+    VKD3D_DYNAMIC_STATE_SAMPLE_LOCATIONS      = (1 << 14),
 };
+
+#define VKD3D_DYNAMIC_STATE_MULTISAMPLE_MASK (VKD3D_DYNAMIC_STATE_RASTERIZATION_SAMPLES |\
+        VKD3D_DYNAMIC_STATE_SAMPLE_LOCATIONS)
+#define VKD3D_MAX_SAMPLE_LOCATIONS 64u
 
 struct vkd3d_shader_debug_ring_spec_constants
 {
@@ -2910,6 +2916,13 @@ struct vkd3d_dynamic_state
     VkRect2D scissors[D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
     VkSampleCountFlagBits rasterization_samples;
     uint32_t view_mask;
+
+    struct
+    {
+        uint32_t samples_per_pixel;
+        VkExtent2D grid;
+        VkSampleLocationEXT locations[VKD3D_MAX_SAMPLE_LOCATIONS];
+    } sample_locations;
 
     float blend_constants[4];
 
@@ -5412,6 +5425,8 @@ struct vkd3d_physical_device_info
     VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_structure_properties;
     VkPhysicalDeviceFragmentShadingRatePropertiesKHR fragment_shading_rate_properties;
     VkPhysicalDeviceConservativeRasterizationPropertiesEXT conservative_rasterization_properties;
+    VkPhysicalDeviceSampleLocationsPropertiesEXT sample_locations_properties;
+    VkExtent2D sample_location_grids[5];
     VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT device_generated_commands_properties;
     VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader_properties;
     VkPhysicalDeviceShaderModuleIdentifierPropertiesEXT shader_module_identifier_properties;
