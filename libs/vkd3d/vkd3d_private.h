@@ -4420,6 +4420,8 @@ struct vkd3d_vram_gate
     void (*close)(void *self, void *account);
     uint64_t (*free_bytes)(void *account);
     uint64_t (*cap)(void *account);
+    int (*take_host)(void *account, uint64_t bytes);
+    void (*give_host)(void *account, uint64_t bytes);
 };
 
 extern const struct vkd3d_vram_gate *vkd3d_vram_gate;

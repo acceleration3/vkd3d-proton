@@ -834,6 +834,8 @@ void vkd3d_free_device_memory(struct d3d12_device *device, const struct vkd3d_de
     if (device->memory_info.vram_account &&
             (device->memory_properties.memoryTypes[allocation->vk_memory_type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
         vkd3d_vram_gate->give(device->memory_info.vram_account, allocation->size);
+    else if (device->memory_info.vram_account)
+        vkd3d_vram_gate->give_host(device->memory_info.vram_account, allocation->size);
 
     rebar_budget = !!(device->memory_info.rebar_budget_mask & (1u << allocation->vk_memory_type));
 
@@ -889,6 +891,7 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
     VkMemoryAllocateInfo allocate_info;
     bool rebar_budget;
     bool vram_gated;
+    bool host_gated;
     VkResult vr;
 
     vkd3d_vram_refused = false;
@@ -1009,6 +1012,17 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
     vram_gated = memory_info->vram_account &&
             (memory_props->memoryTypes[allocate_info.memoryTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
+    host_gated = memory_info->vram_account && !vram_gated;
+
+    if (host_gated && !vkd3d_vram_gate->take_host(memory_info->vram_account, size))
+    {
+        WARN("System memory allocation of %"PRIu64" KiB refused: over the VM's host memory budget.\n", size / 1024);
+        vkd3d_vram_refused = true;
+        if (rebar_budget && respect_budget)
+            pthread_mutex_unlock(&memory_info->budget_lock);
+        return E_OUTOFMEMORY;
+    }
+
     if (vram_gated && !vkd3d_vram_gate->take(memory_info->vram_account, size))
     {
         WARN("Device-local allocation of %"PRIu64" KiB refused: over the guest's video memory cap.\n", size / 1024);
@@ -1025,6 +1039,9 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
 
     if (vr != VK_SUCCESS && vram_gated)
         vkd3d_vram_gate->give(memory_info->vram_account, size);
+
+    if (vr != VK_SUCCESS && host_gated)
+        vkd3d_vram_gate->give_host(memory_info->vram_account, size);
 
     if (vr == VK_SUCCESS)
     {
