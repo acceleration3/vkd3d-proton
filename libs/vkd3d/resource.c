@@ -764,12 +764,23 @@ static HRESULT vkd3d_get_image_create_info(struct d3d12_device *device,
     memset(create_info, 0, sizeof(*create_info));
     image_info->sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 
+#ifdef _WIN32
     if (resource && (resource->heap_flags & D3D12_HEAP_FLAG_SHARED))
     {
         external_info->sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
         external_info->handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
         vk_prepend_struct(image_info, external_info);
     }
+#else
+    /* accel-virt: a shared committed texture's memory leaves as an fd
+     * (vkd3d_export_image), which another device on the GPU imports. */
+    if (resource && (resource->heap_flags & D3D12_HEAP_FLAG_SHARED) && (resource->flags & VKD3D_RESOURCE_COMMITTED))
+    {
+        external_info->sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+        external_info->handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+        vk_prepend_struct(image_info, external_info);
+    }
+#endif
 
     disable_compression = false;
 
@@ -4274,7 +4285,12 @@ HRESULT d3d12_resource_create_committed(struct d3d12_device *device, const D3D12
                 allocate_info.pNext = &export_info;
             }
 #else
-            FIXME("D3D12_HEAP_FLAG_SHARED can only be implemented in native Win32.\n");
+            /* accel-virt: exported as an fd instead (vkd3d_export_image). */
+            dedicated_requirements.prefersDedicatedAllocation = VK_TRUE;
+            export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+            export_info.pNext = allocate_info.pNext;
+            export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+            allocate_info.pNext = &export_info;
 #endif
         }
 
@@ -10048,4 +10064,76 @@ void vkd3d_global_descriptor_buffer_cleanup(struct vkd3d_global_descriptor_buffe
     VK_CALL(vkDestroyBuffer(device->vk_device, global_descriptor_buffer->sampler.vk_buffer, NULL));
     vkd3d_free_device_memory(device, &global_descriptor_buffer->resource.device_allocation);
     vkd3d_free_device_memory(device, &global_descriptor_buffer->sampler.device_allocation);
+}
+
+/* accel-virt: a shared committed texture's memory as an fd, with the image it
+ * was made as, so another Vulkan device on the same GPU can make the same image
+ * over it. The description is made again from the resource's, as it was when
+ * the resource was made: nothing else about it varies for a committed texture
+ * made with no castable formats. A chain the importer would have to repeat
+ * (compression or alignment control) is refused rather than dropped. */
+HRESULT vkd3d_export_image(ID3D12Resource *iface, struct vkd3d_image_export *export)
+{
+    struct d3d12_resource *resource = impl_from_ID3D12Resource(iface);
+    const struct vkd3d_vk_device_procs *vk_procs;
+    struct vkd3d_image_create_info create_info;
+    const VkBaseInStructure *chained;
+    VkMemoryGetFdInfoKHR fd_info;
+    struct d3d12_device *device;
+    HRESULT hr;
+
+    if (!resource || !export)
+        return E_INVALIDARG;
+    device = resource->device;
+    vk_procs = &device->vk_procs;
+    if (!(resource->flags & VKD3D_RESOURCE_COMMITTED) || !(resource->heap_flags & D3D12_HEAP_FLAG_SHARED) ||
+            !d3d12_resource_is_texture(resource) || resource->mem.offset ||
+            !resource->mem.device_allocation.vk_memory || !vk_procs->vkGetMemoryFdKHR)
+        return E_INVALIDARG;
+
+    if (FAILED(hr = vkd3d_get_image_create_info(device, &resource->heap_properties, resource->heap_flags,
+            &resource->desc, resource, 0, NULL, &create_info)))
+        return hr;
+
+    memset(export, 0, sizeof(*export));
+    export->fd = -1;
+    for (chained = create_info.image_info.pNext; chained; chained = chained->pNext)
+    {
+        if (chained->sType == VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO)
+        {
+            if (create_info.format_list.viewFormatCount > VKD3D_IMAGE_EXPORT_MAX_VIEW_FORMATS)
+                return E_NOTIMPL;
+            export->view_format_count = create_info.format_list.viewFormatCount;
+            memcpy(export->view_formats, create_info.format_list.pViewFormats,
+                    export->view_format_count * sizeof(*export->view_formats));
+        }
+        else if (chained->sType != VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO)
+        {
+            return E_NOTIMPL;
+        }
+    }
+
+    if (create_info.image_info.queueFamilyIndexCount > VKD3D_IMAGE_EXPORT_MAX_QUEUE_FAMILIES)
+        return E_NOTIMPL;
+    export->queue_family_count = create_info.image_info.queueFamilyIndexCount;
+    if (export->queue_family_count)
+        memcpy(export->queue_families, create_info.image_info.pQueueFamilyIndices,
+                export->queue_family_count * sizeof(*export->queue_families));
+
+    export->image = create_info.image_info;
+    export->image.pNext = NULL;
+    export->image.pQueueFamilyIndices = NULL;
+    export->memory_type = resource->mem.device_allocation.vk_memory_type;
+    export->size = resource->mem.device_allocation.size;
+
+    fd_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+    fd_info.pNext = NULL;
+    fd_info.memory = resource->mem.device_allocation.vk_memory;
+    fd_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    if (VK_CALL(vkGetMemoryFdKHR(device->vk_device, &fd_info, &export->fd)) != VK_SUCCESS)
+    {
+        export->fd = -1;
+        return E_FAIL;
+    }
+    return S_OK;
 }

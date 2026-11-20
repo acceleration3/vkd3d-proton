@@ -1363,6 +1363,20 @@ HRESULT WINAPI DLLEXPORT vkd3d_proton_open_heap_from_dmabuf(ID3D12Device *device
     return vkd3d_open_heap_from_dmabuf(device, address, fd, size, iid, heap);
 }
 
+/* A shared committed texture's memory as an fd, and the image it was made as,
+ * for another Vulkan device on the GPU to make the same image over. */
+HRESULT WINAPI DLLEXPORT vkd3d_proton_export_image(ID3D12Resource *resource, struct vkd3d_image_export *export)
+{
+    return vkd3d_export_image(resource, export);
+}
+
+/* A shared fence's timeline semaphore as an fd, for another Vulkan device on
+ * the GPU to wait on. */
+HRESULT WINAPI DLLEXPORT vkd3d_proton_export_fence(ID3D12Fence *fence, int *fd)
+{
+    return vkd3d_export_fence(fence, fd);
+}
+
 HRESULT WINAPI DLLEXPORT vkd3d_proton_open_heap_from_host_pointer(ID3D12Device *device, void *address,
         UINT64 size, REFIID iid, void **heap)
 {

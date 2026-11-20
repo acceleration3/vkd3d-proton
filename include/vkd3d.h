@@ -195,6 +195,29 @@ ULONG vkd3d_resource_incref(ID3D12Resource *resource);
 HRESULT vkd3d_open_heap_from_dmabuf(ID3D12Device *device, void *address, int fd, UINT64 size,
         REFIID iid, void **heap);
 
+/* A shared committed texture's memory as an OPAQUE_FD (the caller owns `fd`),
+ * and the image it was made as: the image's pNext and pQueueFamilyIndices are
+ * null, and the arrays here stand in for the view format list and the queue
+ * families. */
+#define VKD3D_IMAGE_EXPORT_MAX_VIEW_FORMATS 16
+#define VKD3D_IMAGE_EXPORT_MAX_QUEUE_FAMILIES 8
+struct vkd3d_image_export
+{
+    int fd;
+    uint32_t memory_type;
+    UINT64 size;
+    VkImageCreateInfo image;
+    uint32_t view_format_count;
+    VkFormat view_formats[VKD3D_IMAGE_EXPORT_MAX_VIEW_FORMATS];
+    uint32_t queue_family_count;
+    uint32_t queue_families[VKD3D_IMAGE_EXPORT_MAX_QUEUE_FAMILIES];
+};
+HRESULT vkd3d_export_image(ID3D12Resource *resource, struct vkd3d_image_export *export);
+
+/* A shared fence's timeline semaphore as an OPAQUE_FD the caller owns: its
+ * values are the fence's own. */
+HRESULT vkd3d_export_fence(ID3D12Fence *fence, int *fd);
+
 HRESULT vkd3d_serialize_root_signature(const D3D12_ROOT_SIGNATURE_DESC *desc,
         D3D_ROOT_SIGNATURE_VERSION version, ID3DBlob **blob, ID3DBlob **error_blob);
 HRESULT vkd3d_create_root_signature_deserializer(const void *data, SIZE_T data_size,

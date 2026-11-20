@@ -169,6 +169,7 @@ struct vkd3d_vulkan_info
     bool EXT_external_memory_host;
     bool KHR_external_memory_fd;
     bool EXT_external_memory_dma_buf;
+    bool KHR_external_semaphore_fd;
     bool EXT_shader_image_atomic_int64;
     bool EXT_mesh_shader;
     bool EXT_mutable_descriptor_type; /* EXT promotion of VALVE one. */
