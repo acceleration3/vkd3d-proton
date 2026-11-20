@@ -1972,7 +1972,44 @@ static HRESULT vkd3d_execute_indirect_ops_init(struct vkd3d_execute_indirect_ops
     meta_indirect_ops->pipelines_count = 0;
     meta_indirect_ops->pipelines_size = 0;
     meta_indirect_ops->pipelines = NULL;
+    meta_indirect_ops->vk_state_pipeline_layout = VK_NULL_HANDLE;
+    meta_indirect_ops->vk_state_pipeline = VK_NULL_HANDLE;
     return S_OK;
+}
+
+HRESULT vkd3d_meta_get_execute_indirect_state_pipeline(struct vkd3d_meta_ops *meta_ops,
+        struct vkd3d_execute_indirect_info *info)
+{
+    struct vkd3d_execute_indirect_ops *meta_indirect_ops = &meta_ops->execute_indirect;
+    VkPushConstantRange push_constant_range;
+    HRESULT hr = S_OK;
+    VkResult vr;
+    int rc;
+
+    if ((rc = pthread_mutex_lock(&meta_indirect_ops->mutex)))
+        return hresult_from_errno(rc);
+
+    if (!meta_indirect_ops->vk_state_pipeline)
+    {
+        push_constant_range.offset = 0;
+        push_constant_range.size = sizeof(struct vkd3d_execute_indirect_state_args);
+        push_constant_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        if (!meta_indirect_ops->vk_state_pipeline_layout &&
+                (vr = vkd3d_meta_create_pipeline_layout(meta_ops->device, 0, NULL,
+                        &push_constant_range, &meta_indirect_ops->vk_state_pipeline_layout)) < 0)
+            hr = hresult_from_vk_result(vr);
+        else if ((vr = vkd3d_meta_create_compute_pipeline(meta_ops->device,
+                sizeof(cs_execute_indirect_state), cs_execute_indirect_state,
+                meta_indirect_ops->vk_state_pipeline_layout, NULL, true, NULL,
+                &meta_indirect_ops->vk_state_pipeline)))
+            hr = hresult_from_vk_result(vr);
+    }
+
+    info->vk_pipeline_layout = meta_indirect_ops->vk_state_pipeline_layout;
+    info->vk_pipeline = meta_indirect_ops->vk_state_pipeline;
+    pthread_mutex_unlock(&meta_indirect_ops->mutex);
+    return hr;
 }
 
 struct vkd3d_meta_execute_indirect_spec_constant_data
@@ -2082,6 +2119,8 @@ static void vkd3d_execute_indirect_ops_cleanup(struct vkd3d_execute_indirect_ops
 
     for (i = 0; i < meta_indirect_ops->pipelines_count; i++)
         VK_CALL(vkDestroyPipeline(device->vk_device, meta_indirect_ops->pipelines[i].vk_pipeline, NULL));
+    VK_CALL(vkDestroyPipeline(device->vk_device, meta_indirect_ops->vk_state_pipeline, NULL));
+    VK_CALL(vkDestroyPipelineLayout(device->vk_device, meta_indirect_ops->vk_state_pipeline_layout, NULL));
     VK_CALL(vkDestroyPipelineLayout(device->vk_device, meta_indirect_ops->vk_pipeline_layout, NULL));
     pthread_mutex_destroy(&meta_indirect_ops->mutex);
     vkd3d_free(meta_indirect_ops->pipelines);
