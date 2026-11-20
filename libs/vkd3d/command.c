@@ -22602,9 +22602,33 @@ static HRESULT STDMETHODCALLTYPE d3d12_command_queue_GetClockCalibration(ID3D12C
     *cpu_timestamp = timestamps[1];
     return S_OK;
 #else
-    FIXME("Calibrated timestamps not supported.\n");
+    struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
+    struct d3d12_device *device = command_queue->device;
+    const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
+    VkCalibratedTimestampInfoKHR timestamp_info;
+    uint64_t max_deviation, timestamp;
+    VkResult vr;
+
     *gpu_timestamp = 0;
     *cpu_timestamp = 0;
+
+    if (!command_queue->vkd3d_queue->timestamp_bits)
+        return E_FAIL;
+
+    if (!(device->device_info.time_domains & VKD3D_TIME_DOMAIN_DEVICE))
+        return S_OK;
+
+    memset(&timestamp_info, 0, sizeof(timestamp_info));
+    timestamp_info.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR;
+    timestamp_info.timeDomain = VK_TIME_DOMAIN_DEVICE_KHR;
+
+    if ((vr = VK_CALL(vkGetCalibratedTimestampsKHR(device->vk_device, 1, &timestamp_info, &timestamp, &max_deviation))) < 0)
+    {
+        ERR("Querying calibrated timestamps failed, vr %d.\n", vr);
+        return hresult_from_vk_result(vr);
+    }
+
+    *gpu_timestamp = timestamp;
     return S_OK;
 #endif
 }
