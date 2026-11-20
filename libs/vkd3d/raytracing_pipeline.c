@@ -1894,7 +1894,8 @@ static HRESULT d3d12_state_object_compile_pipeline_variant(struct d3d12_rt_state
 {
     struct vkd3d_nv_shader_extn nv_shader_extn = d3d12_device_get_nv_shader_extn(object->device);
     const struct vkd3d_vk_device_procs *vk_procs = &object->device->vk_procs;
-    const struct vkd3d_teardown_order *teardown_order;
+    const struct vkd3d_lifecycle_gates *lifecycle_gates;
+    void *lifecycle_gate;
     struct vkd3d_shader_interface_local_info shader_interface_local_info;
     VkRayTracingPipelineInterfaceCreateInfoKHR interface_create_info;
     VkDescriptorSetLayoutBinding *local_static_sampler_bindings;
@@ -2609,9 +2610,9 @@ static HRESULT d3d12_state_object_compile_pipeline_variant(struct d3d12_rt_state
 
     TRACE("Calling vkCreateRayTracingPipelinesKHR.\n");
 
-    teardown_order = vkd3d_teardown_order_for(object->device);
-    if (teardown_order)
-        teardown_order->compiling(teardown_order->self);
+    lifecycle_gates = vkd3d_lifecycle_gate_of(object->device, &lifecycle_gate);
+    if (lifecycle_gates && !lifecycle_gates->share(lifecycle_gate))
+        return E_OUTOFMEMORY;
 
     vr = VK_CALL(vkCreateRayTracingPipelinesKHR(object->device->vk_device, VK_NULL_HANDLE,
             VK_NULL_HANDLE, 1, &pipeline_create_info, NULL,
@@ -2635,8 +2636,8 @@ static HRESULT d3d12_state_object_compile_pipeline_variant(struct d3d12_rt_state
                 VK_NULL_HANDLE, 1, &pipeline_create_info, NULL, &variant->pipeline));
     }
 
-    if (teardown_order)
-        teardown_order->compiled(teardown_order->self);
+    if (lifecycle_gates)
+        lifecycle_gates->unshare(lifecycle_gate);
 
     TRACE("Completed vkCreateRayTracingPipelinesKHR.\n");
 
