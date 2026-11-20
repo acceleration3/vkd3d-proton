@@ -5741,6 +5741,14 @@ static bool init_default_texture_view_desc(struct vkd3d_texture_view_desc *desc,
 {
     const struct d3d12_device *device = resource->device;
 
+    if (view_format && view_format != resource->desc.Format &&
+            vkd3d_format_is_stored_per_pixel_of_a_pair(resource->desc.Format))
+    {
+        WARN("A view of format %#x over a resource of the packed format %#x is not made.\n",
+                view_format, resource->desc.Format);
+        return false;
+    }
+
     if (!(desc->format = vkd3d_format_from_d3d12_resource_desc(device, &resource->desc, view_format)))
     {
         FIXME("Failed to find format (resource format %#x, view format %#x).\n",
