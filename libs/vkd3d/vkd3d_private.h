@@ -2060,6 +2060,8 @@ struct d3d12_root_signature
     uint64_t root_descriptor_raw_va_mask;
     uint64_t root_descriptor_push_mask;
 
+    uint32_t line_coverage_offset;
+
     D3D12_ROOT_SIGNATURE_FLAGS d3d12_flags;
 
     unsigned int binding_count;
@@ -2383,6 +2385,9 @@ struct d3d12_graphics_pipeline_state
     VkPipelineRasterizationStateStreamCreateInfoEXT rs_stream_info;
     VkPipelineRasterizationLineStateCreateInfoEXT rs_line_info;
     VkDepthBiasRepresentationInfoEXT rs_depth_bias_info;
+
+    bool line_coverage;
+    uint32_t line_coverage_offset;
 
     /* vkd3d_dynamic_state_flag */
     uint32_t explicit_dynamic_states;
@@ -6411,6 +6416,7 @@ static inline bool d3d12_device_use_ssbo_root_descriptors(struct d3d12_device *d
 
 bool d3d12_device_supports_variable_shading_rate_tier_1(struct d3d12_device *device);
 bool d3d12_device_supports_variable_shading_rate_tier_2(struct d3d12_device *device);
+bool d3d12_device_emulates_line_coverage(struct d3d12_device *device);
 bool d3d12_device_supports_ray_tracing_tier_1_0(const struct d3d12_device *device);
 UINT d3d12_determine_shading_rate_image_tile_size(struct d3d12_device *device);
 bool d3d12_device_supports_required_subgroup_size_for_stage(
