@@ -2865,7 +2865,8 @@ static struct vkd3d_shader_transform_feedback_info *vkd3d_shader_transform_feedb
     xfb_info->elements = new_entries;
 
     for (i = 0; i < so_desc->NumEntries; i++, num_duped++)
-        if (!(new_entries[i].semantic_name = vkd3d_strdup(new_entries[i].semantic_name)))
+        if (new_entries[i].semantic_name &&
+                !(new_entries[i].semantic_name = vkd3d_strdup(new_entries[i].semantic_name)))
             goto fail;
 
     xfb_info->buffer_stride_count = so_desc->NumStrides;
