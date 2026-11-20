@@ -3456,6 +3456,7 @@ struct vkd3d_dgc_batch
 struct d3d12_command_list
 {
     d3d12_command_list_iface ID3D12GraphicsCommandList_iface;
+    VkDeviceAddress indirect_va_table;
     d3d12_command_list_vkd3d_ext_iface ID3D12GraphicsCommandListExt_iface;
     LONG refcount;
 
@@ -5122,6 +5123,8 @@ struct vkd3d_execute_indirect_args
     /* Arbitrary tag used for debug version of state patcher. Debug messages from tag 0 are ignored. */
     uint32_t debug_tag;
     uint32_t implicit_instance;
+
+    VkDeviceAddress translation_va;
 };
 
 struct vkd3d_execute_indirect_pipeline

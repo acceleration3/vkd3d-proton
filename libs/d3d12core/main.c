@@ -1390,6 +1390,11 @@ HRESULT WINAPI DLLEXPORT vkd3d_proton_export_fence(ID3D12Fence *fence, int *fd)
     return vkd3d_export_fence(fence, fd);
 }
 
+HRESULT WINAPI DLLEXPORT vkd3d_proton_set_indirect_va_table(ID3D12GraphicsCommandList *list, UINT64 table_va)
+{
+    return vkd3d_set_indirect_va_table(list, table_va);
+}
+
 HRESULT WINAPI DLLEXPORT vkd3d_proton_open_heap_from_host_pointer(ID3D12Device *device, void *address,
         UINT64 size, REFIID iid, void **heap)
 {
