@@ -1792,6 +1792,41 @@ fail:
     return hresult_from_vk_result(vr);
 }
 
+static void vkd3d_rtas_instance_translate_ops_cleanup(
+        struct vkd3d_rtas_instance_translate_ops *ops, struct d3d12_device *device)
+{
+    const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
+    VK_CALL(vkDestroyPipeline(device->vk_device, ops->vk_pipeline, NULL));
+    VK_CALL(vkDestroyPipelineLayout(device->vk_device, ops->vk_layout, NULL));
+}
+
+static HRESULT vkd3d_rtas_instance_translate_ops_init(
+        struct vkd3d_rtas_instance_translate_ops *ops, struct d3d12_device *device)
+{
+    VkPushConstantRange push_constant_range;
+    VkResult vr;
+
+    memset(ops, 0, sizeof(*ops));
+    push_constant_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    push_constant_range.offset = 0;
+    push_constant_range.size = sizeof(struct vkd3d_rtas_instance_translate_args);
+
+    if ((vr = vkd3d_meta_create_pipeline_layout(device, 0, NULL,
+            &push_constant_range, &ops->vk_layout)) < 0)
+        goto fail;
+
+    if ((vr = vkd3d_meta_create_compute_pipeline(device,
+            sizeof(cs_rtas_instance_translate), cs_rtas_instance_translate,
+            ops->vk_layout, NULL, true, NULL, &ops->vk_pipeline)) < 0)
+        goto fail;
+
+    return S_OK;
+
+fail:
+    vkd3d_rtas_instance_translate_ops_cleanup(ops, device);
+    return hresult_from_vk_result(vr);
+}
+
 static void vkd3d_predicate_ops_cleanup(struct vkd3d_predicate_ops *meta_predicate_ops,
         struct d3d12_device *device)
 {
@@ -1897,6 +1932,13 @@ void vkd3d_meta_get_predicate_pipeline(struct vkd3d_meta_ops *meta_ops,
     info->vk_pipeline_layout = predicate_ops->vk_command_pipeline_layout;
     info->vk_pipeline = predicate_ops->vk_command_pipelines[command_type];
     info->data_size = predicate_ops->data_sizes[command_type];
+}
+
+void vkd3d_meta_get_rtas_instance_translate_pipeline(struct vkd3d_meta_ops *meta_ops,
+        struct vkd3d_rtas_instance_translate_info *info)
+{
+    info->vk_pipeline = meta_ops->rtas_instance_translate.vk_pipeline;
+    info->vk_pipeline_layout = meta_ops->rtas_instance_translate.vk_layout;
 }
 
 void vkd3d_meta_get_multi_dispatch_indirect_pipeline(struct vkd3d_meta_ops *meta_ops,
@@ -2525,6 +2567,9 @@ HRESULT vkd3d_meta_ops_init(struct vkd3d_meta_ops *meta_ops, struct d3d12_device
     if (FAILED(hr = vkd3d_multi_dispatch_indirect_ops_init(&meta_ops->multi_dispatch_indirect, device)))
         goto fail_multi_dispatch_indirect_ops;
 
+    if (FAILED(hr = vkd3d_rtas_instance_translate_ops_init(&meta_ops->rtas_instance_translate, device)))
+        goto fail_rtas_instance_translate_ops;
+
     if (FAILED(hr = vkd3d_dstorage_ops_init(&meta_ops->dstorage, device)))
         goto fail_dstorage_ops;
 
@@ -2547,6 +2592,8 @@ fail_sampler_feedback_legacy:
 fail_sampler_feedback_heap:
     vkd3d_dstorage_ops_cleanup(&meta_ops->dstorage, device);
 fail_dstorage_ops:
+    vkd3d_rtas_instance_translate_ops_cleanup(&meta_ops->rtas_instance_translate, device);
+fail_rtas_instance_translate_ops:
     vkd3d_multi_dispatch_indirect_ops_cleanup(&meta_ops->multi_dispatch_indirect, device);
 fail_multi_dispatch_indirect_ops:
     vkd3d_execute_indirect_ops_cleanup(&meta_ops->execute_indirect, device);
@@ -2584,6 +2631,7 @@ HRESULT vkd3d_meta_ops_cleanup(struct vkd3d_meta_ops *meta_ops, struct d3d12_dev
     vkd3d_sampler_feedback_ops_cleanup(&meta_ops->sampler_feedback_heap, device);
     vkd3d_sampler_feedback_ops_cleanup(&meta_ops->sampler_feedback_legacy, device);
     vkd3d_dstorage_ops_cleanup(&meta_ops->dstorage, device);
+    vkd3d_rtas_instance_translate_ops_cleanup(&meta_ops->rtas_instance_translate, device);
     vkd3d_multi_dispatch_indirect_ops_cleanup(&meta_ops->multi_dispatch_indirect, device);
     vkd3d_execute_indirect_ops_cleanup(&meta_ops->execute_indirect, device);
     vkd3d_predicate_ops_cleanup(&meta_ops->predicate, device);
