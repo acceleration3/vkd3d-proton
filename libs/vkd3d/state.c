@@ -3290,8 +3290,6 @@ static void rs_desc_from_d3d12(VkPipelineRasterizationStateCreateInfo *vk_desc,
     vk_desc->depthBiasSlopeFactor = d3d12_desc->SlopeScaledDepthBias;
     vk_desc->lineWidth = 1.0f;
 
-    if (d3d12_desc->ForcedSampleCount)
-        FIXME("Ignoring ForcedSampleCount %#x.\n", d3d12_desc->ForcedSampleCount);
 }
 
 static void rs_conservative_info_from_d3d12(VkPipelineRasterizationConservativeStateCreateInfoEXT *conservative_info,
@@ -4975,6 +4973,26 @@ static HRESULT d3d12_pipeline_state_init_graphics_create_info(struct d3d12_pipel
     sample_count = vk_samples_from_dxgi_sample_desc(&desc->sample_desc);
     if (desc->sample_desc.Count != 1 && desc->sample_desc.Quality)
         WARN("Ignoring sample quality %u.\n", desc->sample_desc.Quality);
+
+    if (desc->rasterizer_state.ForcedSampleCount)
+    {
+        DXGI_SAMPLE_DESC forced = {desc->rasterizer_state.ForcedSampleCount, 0};
+
+        if (desc->rtv_formats.NumRenderTargets || desc->dsv_format != DXGI_FORMAT_UNKNOWN)
+            WARN("Ignoring ForcedSampleCount %u with bound targets.\n", forced.Count);
+        else
+        {
+            const VkSampleCountFlags supported =
+                    state->device->device_info.properties2.properties.limits.framebufferNoAttachmentsSampleCounts;
+
+            sample_count = vk_samples_from_dxgi_sample_desc(&forced);
+            if (!(supported & sample_count))
+            {
+                WARN("ForcedSampleCount %u is not supported by the device.\n", forced.Count);
+                return E_INVALIDARG;
+            }
+        }
+    }
 
     rt_count = desc->rtv_formats.NumRenderTargets;
     if (rt_count > ARRAY_SIZE(graphics->blend_attachments))
