@@ -1557,10 +1557,7 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
     }
 
     if (dxil_spv_parsed_blob_get_entry_point_demangled_name(blob, 0, &quirk_entry) != DXIL_SPV_SUCCESS)
-    {
-        ret = VKD3D_ERROR_INVALID_SHADER;
-        goto end;
-    }
+        quirk_entry = "";
 
     quirks = vkd3d_shader_compile_arguments_select_quirks(compiler_args, hash, quirk_entry);
     if (quirks & VKD3D_SHADER_QUIRK_FORCE_COMPUTE_BARRIER)
