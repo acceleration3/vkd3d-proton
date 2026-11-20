@@ -291,6 +291,11 @@ VK_DEVICE_EXT_PFN(vkCmdSetPatchControlPointsEXT)
 
 /* VK_EXT_extended_dynamic_state3 */
 VK_DEVICE_EXT_PFN(vkCmdSetRasterizationSamplesEXT)
+VK_DEVICE_EXT_PFN(vkCmdSetSampleLocationsEnableEXT)
+
+/* VK_EXT_sample_locations */
+VK_INSTANCE_EXT_PFN(vkGetPhysicalDeviceMultisamplePropertiesEXT)
+VK_DEVICE_EXT_PFN(vkCmdSetSampleLocationsEXT)
 
 /* VK_EXT_external_memory_host */
 VK_DEVICE_EXT_PFN(vkGetMemoryHostPointerPropertiesEXT)

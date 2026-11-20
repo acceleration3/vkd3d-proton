@@ -120,6 +120,7 @@ static const struct vkd3d_optional_extension_info optional_device_extensions[] =
     VK_EXTENSION(EXT_VERTEX_ATTRIBUTE_DIVISOR, EXT_vertex_attribute_divisor),
     VK_EXTENSION(EXT_EXTENDED_DYNAMIC_STATE_2, EXT_extended_dynamic_state2),
     VK_EXTENSION(EXT_EXTENDED_DYNAMIC_STATE_3, EXT_extended_dynamic_state3),
+    VK_EXTENSION(EXT_SAMPLE_LOCATIONS, EXT_sample_locations),
     VK_EXTENSION(EXT_EXTERNAL_MEMORY_HOST, EXT_external_memory_host),
     VK_EXTENSION(KHR_EXTERNAL_MEMORY_FD, KHR_external_memory_fd),
     VK_EXTENSION(EXT_EXTERNAL_MEMORY_DMA_BUF, EXT_external_memory_dma_buf),
@@ -1328,6 +1329,12 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
     {
         info->extended_dynamic_state3_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
         vk_prepend_struct(&info->features2, &info->extended_dynamic_state3_features);
+    }
+
+    if (vulkan_info->EXT_sample_locations)
+    {
+        info->sample_locations_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLE_LOCATIONS_PROPERTIES_EXT;
+        vk_prepend_struct(&info->properties2, &info->sample_locations_properties);
     }
 
     if (vulkan_info->EXT_external_memory_host)
@@ -2562,7 +2569,7 @@ static HRESULT vkd3d_init_device_caps(struct d3d12_device *device,
     descriptor_buffer->descriptorBufferImageLayoutIgnored = VK_FALSE;
     physical_device_info->descriptor_heap_features.descriptorHeapCaptureReplay = VK_FALSE;
 
-    /* We only use dynamic rasterization samples. Also Keep the following enabled for 11on12:
+    /* We only use dynamic rasterization samples and sample locations enable. Also Keep the following enabled for 11on12:
      * alphaToCoverage, sampleMask, lineRasterizationMode, depthClipEnable. */
     extended_dynamic_state3 = &physical_device_info->extended_dynamic_state3_features;
     extended_dynamic_state3->extendedDynamicState3TessellationDomainOrigin = VK_FALSE;
@@ -2576,7 +2583,6 @@ static HRESULT vkd3d_init_device_caps(struct d3d12_device *device,
     extended_dynamic_state3->extendedDynamicState3RasterizationStream = VK_FALSE;
     extended_dynamic_state3->extendedDynamicState3ConservativeRasterizationMode = VK_FALSE;
     extended_dynamic_state3->extendedDynamicState3ExtraPrimitiveOverestimationSize = VK_FALSE;
-    extended_dynamic_state3->extendedDynamicState3SampleLocationsEnable = VK_FALSE;
     extended_dynamic_state3->extendedDynamicState3ColorBlendAdvanced = VK_FALSE;
     extended_dynamic_state3->extendedDynamicState3ProvokingVertexMode = VK_FALSE;
     extended_dynamic_state3->extendedDynamicState3LineStippleEnable = VK_FALSE;
@@ -9497,14 +9503,67 @@ static void d3d12_device_caps_init_feature_options1(struct d3d12_device *device)
     FIXME("TotalLaneCount = %u, may be inaccurate.\n", options1->TotalLaneCount);
 }
 
+static D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER d3d12_device_determine_programmable_sample_positions_tier(
+        struct d3d12_device *device)
+{
+    const struct vkd3d_vk_instance_procs *vk_procs = &device->vkd3d_instance->vk_procs;
+    const VkPhysicalDeviceSampleLocationsPropertiesEXT *properties = &device->device_info.sample_locations_properties;
+    VkMultisamplePropertiesEXT multisample_properties;
+    D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER tier;
+    unsigned int i;
+
+    memset(device->device_info.sample_location_grids, 0, sizeof(device->device_info.sample_location_grids));
+
+    if (!device->vk_info.EXT_sample_locations || !vk_procs->vkGetPhysicalDeviceMultisamplePropertiesEXT ||
+            !device->device_info.extended_dynamic_state3_features.extendedDynamicState3SampleLocationsEnable ||
+            !device->device_info.extended_dynamic_state3_features.extendedDynamicState3RasterizationSamples)
+        return D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_NOT_SUPPORTED;
+
+    if (properties->sampleLocationSubPixelBits < 4 || properties->sampleLocationCoordinateRange[0] > 0.0f ||
+            properties->sampleLocationCoordinateRange[1] < 15.0f / 16.0f)
+        return D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_NOT_SUPPORTED;
+
+    for (i = 1; i < ARRAY_SIZE(device->device_info.sample_location_grids); i++)
+    {
+        if (!(properties->sampleLocationSampleCounts & (1u << i)))
+            continue;
+
+        memset(&multisample_properties, 0, sizeof(multisample_properties));
+        multisample_properties.sType = VK_STRUCTURE_TYPE_MULTISAMPLE_PROPERTIES_EXT;
+        VK_CALL(vkGetPhysicalDeviceMultisamplePropertiesEXT(device->vk_physical_device,
+                (VkSampleCountFlagBits)(1u << i), &multisample_properties));
+
+        if (!multisample_properties.maxSampleLocationGridSize.width ||
+                !multisample_properties.maxSampleLocationGridSize.height ||
+                multisample_properties.maxSampleLocationGridSize.width *
+                multisample_properties.maxSampleLocationGridSize.height * (1u << i) > VKD3D_MAX_SAMPLE_LOCATIONS)
+            continue;
+
+        device->device_info.sample_location_grids[i] = multisample_properties.maxSampleLocationGridSize;
+    }
+
+    if (!device->device_info.sample_location_grids[2].width)
+        return D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_NOT_SUPPORTED;
+
+    tier = D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_2;
+    for (i = 1; i < ARRAY_SIZE(device->device_info.sample_location_grids); i++)
+    {
+        const VkExtent2D *grid = &device->device_info.sample_location_grids[i];
+
+        if (grid->width && ((grid->width & 1) || (grid->height & 1)))
+            tier = D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_1;
+    }
+
+    return tier;
+}
+
 static void d3d12_device_caps_init_feature_options2(struct d3d12_device *device)
 {
     const VkPhysicalDeviceFeatures *features = &device->device_info.features2.features;
     D3D12_FEATURE_DATA_D3D12_OPTIONS2 *options2 = &device->d3d12_caps.options2;
 
     options2->DepthBoundsTestSupported = features->depthBounds;
-    /* Requires VK_EXT_sample_locations */
-    options2->ProgrammableSamplePositionsTier = D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_NOT_SUPPORTED;
+    options2->ProgrammableSamplePositionsTier = d3d12_device_determine_programmable_sample_positions_tier(device);
 }
 
 static void d3d12_device_caps_init_feature_options3(struct d3d12_device *device)
