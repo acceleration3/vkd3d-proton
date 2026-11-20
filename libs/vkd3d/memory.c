@@ -928,7 +928,9 @@ void vkd3d_free_device_memory(struct d3d12_device *device, const struct vkd3d_de
 
     VK_CALL(vkFreeMemory(device->vk_device, allocation->vk_memory, NULL));
 
-    if (device->memory_info.vram_account &&
+    if (allocation->imported)
+        ;
+    else if (device->memory_info.vram_account &&
             (device->memory_properties.memoryTypes[allocation->vk_memory_type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
         vkd3d_vram_gate->give(device->memory_info.vram_account, allocation->size);
     else if (device->memory_info.vram_account)
@@ -981,6 +983,7 @@ static bool vkd3d_memory_info_type_mask_covers_multiple_memory_heaps(
 
 const struct vkd3d_vram_gate *vkd3d_vram_gate;
 static __thread bool vkd3d_vram_refused;
+static __thread bool vkd3d_memory_imported;
 
 void vkd3d_set_vram_gate(const void *gate)
 {
@@ -1122,9 +1125,9 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
                     allocate_info.allocationSize, device->device_info.vulkan_1_1_properties.maxMemoryAllocationSize);
         }
 
-        vram_gated = memory_info->vram_account &&
+        vram_gated = memory_info->vram_account && !vkd3d_memory_imported &&
                 (memory_props->memoryTypes[candidate_type_index].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        host_gated = memory_info->vram_account && !vram_gated;
+        host_gated = memory_info->vram_account && !vkd3d_memory_imported && !vram_gated;
 
         if (host_gated && !vkd3d_vram_gate->take_host(memory_info->vram_account, size))
         {
@@ -1224,6 +1227,7 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
 
     allocation->vk_memory_type = allocate_info.memoryTypeIndex;
     allocation->size = size;
+    allocation->imported = vkd3d_memory_imported;
     return S_OK;
 }
 
@@ -1292,9 +1296,11 @@ static HRESULT vkd3d_import_host_memory(struct d3d12_device *device, void *host_
     if (!VKD3D_CONFIG_FLAG_IS_SET(USE_HOST_IMPORT_FALLBACK))
     {
         /* A failed import fails: memory that only looks like the caller's
-         * would take writes the caller never sees. */
-        if (FAILED(hr = vkd3d_try_allocate_device_memory(device, size,
-                type_flags, type_mask, &import_info, true, allocation)))
+         * would take writes the caller never sees. The memory exists already, so no gate counts it again. */
+        vkd3d_memory_imported = true;
+        hr = vkd3d_try_allocate_device_memory(device, size, type_flags, type_mask, &import_info, true, allocation);
+        vkd3d_memory_imported = false;
+        if (FAILED(hr))
             WARN("Failed to import host memory, hr %#x.\n", (int)hr);
     }
     else
@@ -1310,8 +1316,47 @@ static HRESULT vkd3d_import_host_memory(struct d3d12_device *device, void *host_
     return hr;
 }
 
-/* The dma-buf `fd` imported as device memory; Vulkan takes a duplicate, and
- * the caller keeps its own descriptor. */
+#ifndef _WIN32
+/* One attempt to import the dma-buf `fd` as memory of the types in `type_mask`. Vulkan takes a duplicate: a driver
+ * that fails an import may or may not have closed it, and one that closed it must not see it closed again. */
+static HRESULT vkd3d_import_fd_attempt(struct d3d12_device *device, int fd, VkDeviceSize size,
+        VkMemoryPropertyFlags type_flags, uint32_t type_mask, void *pNext,
+        struct vkd3d_device_memory_allocation *allocation)
+{
+    VkImportMemoryFdInfoKHR import_info;
+    struct stat before, after;
+    HRESULT hr;
+    int owned;
+
+    if ((owned = dup(fd)) < 0)
+        return E_OUTOFMEMORY;
+
+    memset(&before, 0, sizeof(before));
+    if (fstat(owned, &before) != 0)
+    {
+        close(owned);
+        return E_OUTOFMEMORY;
+    }
+
+    import_info.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+    import_info.pNext = pNext;
+    import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    import_info.fd = owned;
+
+    vkd3d_memory_imported = true;
+    hr = vkd3d_try_allocate_device_memory(device, size, type_flags, type_mask, &import_info, false, allocation);
+    vkd3d_memory_imported = false;
+
+    if (FAILED(hr) && fstat(owned, &after) == 0 && after.st_dev == before.st_dev && after.st_ino == before.st_ino)
+        close(owned);
+    return hr;
+}
+#endif
+
+/* The dma-buf `fd` imported as device memory; the caller keeps its own descriptor. The memory exists already, so no
+ * budget or gate refuses or counts it. A driver's list of the memory types a foreign dma-buf can be imported as is not
+ * always true (NVIDIA lists system memory types it refuses and imports into device local ones it does not list), so
+ * the types the list names are tried first and every other type of the buffer after them. */
 static HRESULT vkd3d_import_fd_memory(struct d3d12_device *device, int fd,
         VkDeviceSize size, VkMemoryPropertyFlags type_flags, uint32_t type_mask,
         void *pNext, struct vkd3d_device_memory_allocation *allocation)
@@ -1321,9 +1366,7 @@ static HRESULT vkd3d_import_fd_memory(struct d3d12_device *device, int fd,
 #else
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     VkMemoryFdPropertiesKHR fd_properties;
-    VkImportMemoryFdInfoKHR import_info;
-    struct stat before, after;
-    int owned;
+    uint32_t untried;
     HRESULT hr;
 
     if (!device->vk_info.KHR_external_memory_fd || !device->vk_info.EXT_external_memory_dma_buf)
@@ -1335,30 +1378,21 @@ static HRESULT vkd3d_import_fd_memory(struct d3d12_device *device, int fd,
             VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fd_properties)) != VK_SUCCESS)
         return E_INVALIDARG;
 
-    if ((owned = dup(fd)) < 0)
-        return E_OUTOFMEMORY;
+    if (SUCCEEDED(hr = vkd3d_import_fd_attempt(device, fd, size, type_flags,
+            type_mask & fd_properties.memoryTypeBits, pNext, allocation)))
+        return hr;
 
-    import_info.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
-    import_info.pNext = pNext;
-    import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
-    import_info.fd = owned;
-    memset(&before, 0, sizeof(before));
-    if (fstat(owned, &before) != 0)
+    untried = type_mask & ((1u << device->memory_properties.memoryTypeCount) - 1u);
+    while (untried)
     {
-        close(owned);
-        return E_OUTOFMEMORY;
+        uint32_t type_index = vkd3d_bitmask_iter32(&untried);
+
+        if (SUCCEEDED(hr = vkd3d_import_fd_attempt(device, fd, size, 0, 1u << type_index, pNext, allocation)))
+            return hr;
     }
 
-    /* The memory exists: no budget refuses it. Some drivers close the fd of an import they refuse, so a descriptor
-     * that no longer names the dma-buf is not closed again. */
-    if (FAILED(hr = vkd3d_try_allocate_device_memory(device, size, type_flags,
-            type_mask & fd_properties.memoryTypeBits, &import_info, false, allocation)))
-    {
-        if (fstat(owned, &after) == 0 && after.st_dev == before.st_dev && after.st_ino == before.st_ino)
-            close(owned);
-        WARN("Failed to import dma-buf memory, hr %#x, memory types %#x of %#x.\n",
-                hr, fd_properties.memoryTypeBits, type_mask);
-    }
+    WARN("Failed to import dma-buf memory, hr %#x, memory types %#x of %#x.\n",
+            hr, fd_properties.memoryTypeBits, type_mask);
     return hr;
 #endif
 }
@@ -1745,7 +1779,8 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
         allocation->flags |= VKD3D_ALLOCATION_FLAG_CPU_ACCESS;
         allocation->cpu_address = host_ptr;
 
-        if (!(device->memory_properties.memoryTypes[allocation->device_allocation.vk_memory_type].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+        if ((device->memory_properties.memoryTypes[allocation->device_allocation.vk_memory_type].propertyFlags &
+                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) == VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
         {
             if ((vr = VK_CALL(vkMapMemory(device->vk_device, allocation->device_allocation.vk_memory,
                     0, VK_WHOLE_SIZE, 0, &dummy_mapping))))
