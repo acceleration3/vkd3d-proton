@@ -5963,6 +5963,7 @@ struct d3d12_device
     uint32_t descriptor_heap_gpu_next;
 
     HRESULT removed_reason;
+    bool waits_abandoned;
 
     const struct vkd3d_format *formats;
     const struct vkd3d_format *depth_stencil_formats;

@@ -1365,6 +1365,11 @@ void WINAPI DLLEXPORT vkd3d_proton_set_vram_gate(const void *gate)
     vkd3d_set_vram_gate(gate);
 }
 
+void WINAPI DLLEXPORT vkd3d_proton_abandon_waits(ID3D12Device *device)
+{
+    vkd3d_abandon_waits(device);
+}
+
 HRESULT WINAPI DLLEXPORT vkd3d_proton_open_heap_from_dmabuf(ID3D12Device *device, void *address, int fd,
         UINT64 size, REFIID iid, void **heap)
 {

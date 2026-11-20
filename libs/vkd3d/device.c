@@ -10682,6 +10682,7 @@ static HRESULT d3d12_device_init(struct d3d12_device *device,
     vkd3d_atomic_uint64_store_explicit(
             &device->vendor_hacks.global_ray_tracing_pipeline_create_flags, 0,
             vkd3d_memory_order_relaxed);
+    device->waits_abandoned = false;
 
     device->vk_device = VK_NULL_HANDLE;
 
