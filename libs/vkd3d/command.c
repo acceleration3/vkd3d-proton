@@ -18429,6 +18429,7 @@ static void d3d12_command_list_execute_indirect_state_template_dgc(
     bool restart_predication;
     bool explicit_preprocess;
     bool require_ibo_update;
+    bool require_va_translation;
     bool require_patch;
     const char *tag;
     unsigned int i;
@@ -18507,7 +18508,7 @@ static void d3d12_command_list_execute_indirect_state_template_dgc(
 
     /* Don't try to batch if we have predication since it's just needless complexity.
      * Don't do this on tilers since we'll be introducing more technically unnecessary render pass flushes. */
-    if (!list->predication.va && dgc_mode == VKD3D_DGC_MODE_APPLICATION_CALL &&
+    if (!list->predication.va && dgc_mode == VKD3D_DGC_MODE_APPLICATION_CALL && !list->indirect_va_table &&
         !list->device->workarounds.tiler_suspend_resume &&
         !explicit_preprocess && list->state && list->state->pipeline_type != VKD3D_PIPELINE_TYPE_COMPUTE)
     {
@@ -18561,6 +18562,7 @@ static void d3d12_command_list_execute_indirect_state_template_dgc(
 
     /* If everything regarding alignment works out, we can just reuse the app indirect buffer instead. */
     require_ibo_update = false;
+    require_va_translation = false;
     require_patch = false;
 
     /* Bind IBO. If we always update the IBO indirectly, do not validate the index buffer here.
@@ -18574,8 +18576,27 @@ static void d3d12_command_list_execute_indirect_state_template_dgc(
         }
     }
 
+    if (list->indirect_va_table)
+    {
+        for (i = 0; i < signature->desc.NumArgumentDescs; i++)
+        {
+            switch (signature->desc.pArgumentDescs[i].Type)
+            {
+                case D3D12_INDIRECT_ARGUMENT_TYPE_INDEX_BUFFER_VIEW:
+                case D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW:
+                case D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW:
+                case D3D12_INDIRECT_ARGUMENT_TYPE_SHADER_RESOURCE_VIEW:
+                case D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW:
+                    require_va_translation = true;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
     if ((signature->state_template.dgc.stride != signature->desc.ByteStride && max_command_count > 1) ||
-            patch_args.debug_tag)
+            patch_args.debug_tag || require_va_translation)
     {
         require_patch = true;
     }
@@ -18609,6 +18630,7 @@ static void d3d12_command_list_execute_indirect_state_template_dgc(
         }
 
         patch_args.template_va = signature->state_template.dgc.buffer_va;
+        patch_args.translation_va = require_va_translation ? list->indirect_va_table : 0;
         patch_args.api_buffer_va = arg_buffer->res.va + arg_buffer_offset;
         patch_args.device_generated_commands_va = stream_allocation.va;
         patch_args.indirect_count_va = count_buffer ? count_buffer->res.va + count_buffer_offset : 0;
@@ -27973,5 +27995,19 @@ HRESULT vkd3d_export_fence(ID3D12Fence *iface, int *fd)
         *fd = -1;
         return E_FAIL;
     }
+    return S_OK;
+}
+
+/* accel-virt: the address of a table that maps the GPU virtual addresses an
+ * application wrote into argument buffers to the device's own, which the
+ * state patch pass of ExecuteIndirect applies to every address argument. */
+HRESULT vkd3d_set_indirect_va_table(ID3D12GraphicsCommandList *iface, UINT64 table_va)
+{
+    struct d3d12_command_list *list;
+
+    if (!iface)
+        return E_INVALIDARG;
+    list = impl_from_ID3D12GraphicsCommandList((d3d12_command_list_iface *)iface);
+    list->indirect_va_table = table_va;
     return S_OK;
 }
