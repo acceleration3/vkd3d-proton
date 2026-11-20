@@ -163,6 +163,13 @@ HRESULT vkd3d_export_image(ID3D12Resource *resource, struct vkd3d_image_export *
  * values are the fence's own. */
 HRESULT vkd3d_export_fence(ID3D12Fence *fence, int *fd);
 
+/* The address of a table that maps application GPU virtual addresses in
+ * ExecuteIndirect argument buffers to device addresses, or 0 for none:
+ * u32 count, u32 pad, u64 address used for an unmapped argument, then count
+ * ranges of {u64 application address, u64 bytes, u64 device address} sorted
+ * by application address. */
+HRESULT vkd3d_set_indirect_va_table(ID3D12GraphicsCommandList *list, UINT64 table_va);
+
 HRESULT vkd3d_serialize_root_signature(const D3D12_ROOT_SIGNATURE_DESC *desc,
         D3D_ROOT_SIGNATURE_VERSION version, ID3DBlob **blob, ID3DBlob **error_blob);
 HRESULT vkd3d_create_root_signature_deserializer(const void *data, SIZE_T data_size,

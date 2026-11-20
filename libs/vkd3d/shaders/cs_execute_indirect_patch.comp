@@ -1,6 +1,7 @@
 #version 450
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
 layout(local_size_x_id = 0) in;
 
@@ -32,6 +33,20 @@ layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer In
 	uint count;
 };
 
+struct TranslationRange
+{
+	uint64_t guest;
+	uint64_t bytes;
+	uint64_t host;
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Translation {
+	uint count;
+	uint pad;
+	uint64_t unmapped;
+	TranslationRange ranges[];
+};
+
 layout(push_constant) uniform Registers
 {
 	Commands commands_va;
@@ -41,6 +56,9 @@ layout(push_constant) uniform Registers
 	IndirectCountWrite dst_indirect_count_va;
 	uint src_stride;
 	uint dst_stride;
+	uint debug_tag;
+	uint implicit_instance;
+	Translation translation_va;
 };
 
 void main()
@@ -62,6 +80,49 @@ void main()
 		uint src_offset = src_stride * draw_id + cmd.src_offset;
 		uint dst_offset = dst_stride * draw_id + cmd.dst_offset;
 		uint src_value = src_buffer_va.values[src_offset];
+
+		if (uvec2(translation_va) != uvec2(0))
+		{
+			uint token = cmd.type;
+			bool is_lo = token == 1u || token == 5u || token == 9u;
+			bool is_hi = token == 2u || token == 6u || token == 10u;
+			bool is_size = token == 3u || token == 7u;
+			if (is_lo || is_hi || is_size)
+			{
+				uint va_word = src_stride * draw_id + cmd.src_offset - (is_hi ? 1u : (is_size ? 2u : 0u));
+				uint64_t va = uint64_t(src_buffer_va.values[va_word]) | (uint64_t(src_buffer_va.values[va_word + 1u]) << 32);
+				uint lo_index = 0u;
+				uint hi_index = translation_va.count;
+				while (lo_index < hi_index)
+				{
+					uint mid = (lo_index + hi_index) >> 1u;
+					if (translation_va.ranges[mid].guest <= va)
+						lo_index = mid + 1u;
+					else
+						hi_index = mid;
+				}
+				bool mapped = false;
+				uint64_t host = translation_va.unmapped;
+				uint64_t room = 0ul;
+				if (lo_index != 0u)
+				{
+					TranslationRange range = translation_va.ranges[lo_index - 1u];
+					uint64_t into = va - range.guest;
+					if (into < range.bytes)
+					{
+						mapped = true;
+						host = range.host + into;
+						room = range.bytes - into;
+					}
+				}
+				if (is_size)
+					src_value = mapped ? uint(min(uint64_t(src_value), room)) : 0u;
+				else if (is_lo)
+					src_value = uint(host & 0xfffffffful);
+				else
+					src_value = uint(host >> 32);
+			}
+		}
 		dst_buffer_va.values[dst_offset] = src_value;
 	}
 }

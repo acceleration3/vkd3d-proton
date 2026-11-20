@@ -8,4 +8,5 @@ EXPORTS
     vkd3d_proton_abandon_waits
     vkd3d_proton_export_image
     vkd3d_proton_export_fence
+    vkd3d_proton_set_indirect_va_table
     D3D12SDKVersion DATA PRIVATE
