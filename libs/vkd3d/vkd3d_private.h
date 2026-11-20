@@ -5084,10 +5084,21 @@ struct vkd3d_predicate_resolve_args
     VkBool32 invert;
 };
 
+struct vkd3d_predicate_copy_buffer_args
+{
+    VkDeviceAddress src_va;
+    VkDeviceAddress dst_va;
+    uint32_t src_skew;
+    uint32_t dst_skew;
+    uint32_t size;
+};
+
 struct vkd3d_predicate_ops
 {
     VkPipelineLayout vk_command_pipeline_layout;
     VkPipelineLayout vk_resolve_pipeline_layout;
+    VkPipelineLayout vk_copy_buffer_pipeline_layout;
+    VkPipeline vk_copy_buffer_pipeline;
     VkPipeline vk_command_pipelines[VKD3D_PREDICATE_COMMAND_COUNT];
     VkPipeline vk_resolve_pipeline;
     uint32_t data_sizes[VKD3D_PREDICATE_COMMAND_COUNT];
