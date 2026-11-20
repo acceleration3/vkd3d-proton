@@ -21,6 +21,7 @@
 
 #include "vkd3d_private.h"
 #include "av_line_coverage.h"
+#include "av_stream_swap.h"
 #include "vkd3d_descriptor_debug.h"
 #include "vkd3d_rw_spinlock.h"
 #include "vkd3d_timestamp_profiler.h"
@@ -3837,10 +3838,7 @@ static void rs_stream_info_from_d3d12(VkPipelineRasterizationStateStreamCreateIn
         return;
 
     if (!vk_info->rasterization_stream)
-    {
-        FIXME("Rasterization stream select is not supported by Vulkan implementation.\n");
         return;
-    }
 
     stream_info->sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_STREAM_CREATE_INFO_EXT;
     stream_info->pNext = NULL;
@@ -4988,6 +4986,48 @@ static void d3d12_pipeline_state_graphics_load_spirv_from_cached_state(
     }
 }
 
+static bool d3d12_pipeline_state_swaps_rasterized_stream(struct d3d12_pipeline_state *state,
+        const struct d3d12_pipeline_state_desc *desc)
+{
+    const D3D12_STREAM_OUTPUT_DESC *so_desc = &desc->stream_output;
+
+    return state->pipeline_type == VKD3D_PIPELINE_TYPE_GRAPHICS && so_desc->NumEntries && so_desc->RasterizedStream &&
+            so_desc->RasterizedStream != D3D12_SO_NO_RASTERIZED_STREAM &&
+            !state->device->vk_info.rasterization_stream &&
+            (state->graphics.stage_flags & VK_SHADER_STAGE_GEOMETRY_BIT);
+}
+
+static void d3d12_pipeline_state_swap_rasterized_stream(struct d3d12_pipeline_state *state,
+        const struct d3d12_pipeline_state_desc *desc)
+{
+    struct d3d12_graphics_pipeline_state *graphics = &state->graphics;
+    uint32_t *words = NULL;
+    unsigned int i;
+    size_t count;
+    int status;
+
+    for (i = 0; i < graphics->stage_count; i++)
+    {
+        if (graphics->cached_desc.bytecode_stages[i] != VK_SHADER_STAGE_GEOMETRY_BIT || !graphics->code[i].size)
+            continue;
+
+        status = av_ss_rasterize_stream_as_zero(graphics->code[i].code, graphics->code[i].size / sizeof(uint32_t),
+                desc->stream_output.RasterizedStream, &words, &count);
+        if (status != AV_SS_OK)
+        {
+            if (status != AV_SS_UNCHANGED)
+                FIXME("Stream %u cannot be rasterized as stream 0 (%d), stream 0 is rasterized instead.\n",
+                        desc->stream_output.RasterizedStream, status);
+            return;
+        }
+
+        vkd3d_shader_free_shader_code(&graphics->code[i]);
+        graphics->code[i].code = words;
+        graphics->code[i].size = count * sizeof(uint32_t);
+        return;
+    }
+}
+
 static bool d3d12_pipeline_state_wants_line_coverage(struct d3d12_pipeline_state *state,
         const struct d3d12_pipeline_state_desc *desc)
 {
@@ -5135,6 +5175,9 @@ static HRESULT d3d12_pipeline_state_graphics_create_shader_stages(
 
     if (d3d12_pipeline_state_wants_line_coverage(state, desc))
         d3d12_pipeline_state_add_line_coverage(state);
+
+    if (d3d12_pipeline_state_swaps_rasterized_stream(state, desc))
+        d3d12_pipeline_state_swap_rasterized_stream(state, desc);
 
     for (i = 0; i < graphics->stage_count; i++)
     {
@@ -6262,7 +6305,7 @@ static HRESULT d3d12_pipeline_state_init_graphics_spirv(struct d3d12_pipeline_st
     struct d3d12_device *device = state->device;
     HRESULT hr;
 
-    if (!d3d12_pipeline_state_wants_line_coverage(state, desc))
+    if (!d3d12_pipeline_state_wants_line_coverage(state, desc) && !d3d12_pipeline_state_swaps_rasterized_stream(state, desc))
         d3d12_pipeline_state_graphics_load_spirv_from_cached_state(state, device, desc, cached_pso);
     if (FAILED(hr = d3d12_pipeline_state_graphics_create_shader_stages(state, device, desc)))
         return hr;
