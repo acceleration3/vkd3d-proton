@@ -3156,6 +3156,32 @@ static void d3d12_device_cleanup_vendor_hacks(struct d3d12_device *device)
 #endif
 }
 
+static const struct vkd3d_teardown_order *vkd3d_teardown_order;
+
+void vkd3d_set_teardown_order(const void *order)
+{
+    const struct vkd3d_teardown_order *given = order;
+    vkd3d_teardown_order = given && given->size >= sizeof(*given) ? given : NULL;
+}
+
+const struct vkd3d_teardown_order *vkd3d_teardown_order_for(const struct d3d12_device *device)
+{
+    const struct vkd3d_teardown_order *order = vkd3d_teardown_order;
+    if (!order || !order->needed_by(order->self, device->device_info.vulkan_1_2_properties.driverID))
+        return NULL;
+    return order;
+}
+
+static void vkd3d_destroy_vk_device(struct d3d12_device *device, VkDevice vk_device)
+{
+    const struct vkd3d_teardown_order *order = vkd3d_teardown_order_for(device);
+    if (order)
+        order->destroying(order->self);
+    device->vk_procs.vkDestroyDevice(vk_device, NULL);
+    if (order)
+        order->destroyed(order->self);
+}
+
 static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
         const struct vkd3d_device_create_info *create_info)
 {
@@ -3333,7 +3359,7 @@ static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
     {
         ERR("Failed to load device procs, hr %#x.\n", (int)hr);
         if (device->vk_procs.vkDestroyDevice)
-            device->vk_procs.vkDestroyDevice(vk_device, NULL);
+            vkd3d_destroy_vk_device(device, vk_device);
         return hr;
     }
 
@@ -3342,7 +3368,7 @@ static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
     if (FAILED(hr = d3d12_device_create_vkd3d_queues(device, &device_queue_info)))
     {
         ERR("Failed to create queues, hr %#x.\n", (int)hr);
-        device->vk_procs.vkDestroyDevice(vk_device, NULL);
+        vkd3d_destroy_vk_device(device, vk_device);
         return hr;
     }
 
@@ -4009,7 +4035,7 @@ static void d3d12_device_destroy(struct d3d12_device *device)
         d3d12_device_poll_device_faults(device, 0);
 
     vkd3d_free((void *)device->vk_info.extension_names);
-    VK_CALL(vkDestroyDevice(device->vk_device, NULL));
+    vkd3d_destroy_vk_device(device, device->vk_device);
     rwlock_destroy(&device->fragment_output_lock);
     rwlock_destroy(&device->vertex_input_lock);
     pthread_mutex_destroy(&device->mutex);
@@ -10979,8 +11005,7 @@ out_free_private_store:
     vkd3d_private_store_destroy(&device->private_store);
 out_free_vk_resources:
     d3d12_device_destroy_vkd3d_queues(device);
-    vk_procs = &device->vk_procs;
-    VK_CALL(vkDestroyDevice(device->vk_device, NULL));
+    vkd3d_destroy_vk_device(device, device->vk_device);
 out_free_instance:
     vkd3d_instance_decref(device->vkd3d_instance);
 out_free_fragment_output_lock:
