@@ -24367,6 +24367,8 @@ static bool d3d12_command_queue_exec_submit_needs_fallback_queue(
     return false;
 }
 
+#define VKD3D_SUBMISSION_SPIN_NS 100000ull
+
 static void *d3d12_command_queue_submission_worker_main(void *userdata)
 {
     struct d3d12_command_queue_submission submission;
@@ -24390,6 +24392,18 @@ static void *d3d12_command_queue_submission_worker_main(void *userdata)
 
     for (;;)
     {
+        /* A submission that comes while this thread sleeps waits for the
+         * scheduler to wake it on a core that may be idle, and an application
+         * that waits on each frame pays that on every one. Look for the next
+         * one for a while first: frames that come back to back find it awake. */
+        if (!__atomic_load_n(&queue->submissions_count, __ATOMIC_ACQUIRE))
+        {
+            const uint64_t until = vkd3d_get_current_time_ns() + VKD3D_SUBMISSION_SPIN_NS;
+            while (!__atomic_load_n(&queue->submissions_count, __ATOMIC_ACQUIRE) &&
+                    vkd3d_get_current_time_ns() < until)
+                vkd3d_pause();
+        }
+
         pthread_mutex_lock(&queue->queue_lock);
         while (queue->submissions_count == 0)
             pthread_cond_wait(&queue->queue_cond, &queue->queue_lock);
