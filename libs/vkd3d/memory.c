@@ -19,6 +19,7 @@
 #define VKD3D_DBG_CHANNEL VKD3D_DBG_CHANNEL_API
 
 #ifndef _WIN32
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 #include "vkd3d_private.h"
@@ -1321,6 +1322,7 @@ static HRESULT vkd3d_import_fd_memory(struct d3d12_device *device, int fd,
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     VkMemoryFdPropertiesKHR fd_properties;
     VkImportMemoryFdInfoKHR import_info;
+    struct stat before, after;
     int owned;
     HRESULT hr;
 
@@ -1340,12 +1342,20 @@ static HRESULT vkd3d_import_fd_memory(struct d3d12_device *device, int fd,
     import_info.pNext = pNext;
     import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
     import_info.fd = owned;
+    memset(&before, 0, sizeof(before));
+    if (fstat(owned, &before) != 0)
+    {
+        close(owned);
+        return E_OUTOFMEMORY;
+    }
 
-    /* The memory exists: no budget refuses it. A failure leaves the fd with the caller. */
+    /* The memory exists: no budget refuses it. Some drivers close the fd of an import they refuse, so a descriptor
+     * that no longer names the dma-buf is not closed again. */
     if (FAILED(hr = vkd3d_try_allocate_device_memory(device, size, type_flags,
             type_mask & fd_properties.memoryTypeBits, &import_info, false, allocation)))
     {
-        close(owned);
+        if (fstat(owned, &after) == 0 && after.st_dev == before.st_dev && after.st_ino == before.st_ino)
+            close(owned);
         WARN("Failed to import dma-buf memory, hr %#x, memory types %#x of %#x.\n",
                 hr, fd_properties.memoryTypeBits, type_mask);
     }
