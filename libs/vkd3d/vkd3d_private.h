@@ -2401,6 +2401,7 @@ struct d3d12_graphics_pipeline_state
 
     bool line_coverage;
     uint32_t line_coverage_offset;
+    uint32_t computed_coverage;
 
     struct vkd3d_shader_code indirect_code[VKD3D_INDIRECT_STATE_MODE_COUNT][VKD3D_MAX_SHADER_STAGES];
     int indirect_code_status[VKD3D_INDIRECT_STATE_MODE_COUNT];
