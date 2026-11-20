@@ -33,6 +33,9 @@ static void d3d12_command_queue_add_submission(struct d3d12_command_queue *queue
         const struct d3d12_command_queue_submission *sub);
 static void d3d12_fence_inc_ref(struct d3d12_fence *fence);
 static void d3d12_fence_dec_ref(struct d3d12_fence *fence);
+static void d3d12_fence_lock(struct d3d12_fence *fence);
+static void d3d12_fence_unlock(struct d3d12_fence *fence);
+static void d3d12_fence_drop_wait_ticket_locked(struct d3d12_fence *fence, UINT64 ticket);
 static void d3d12_shared_fence_inc_ref(struct d3d12_shared_fence *fence);
 static void d3d12_shared_fence_dec_ref(struct d3d12_shared_fence *fence);
 static void d3d12_fence_iface_inc_ref(d3d12_fence_iface *iface);
@@ -1179,6 +1182,79 @@ static void d3d12_command_queue_ensure_fence_signal_order(
         struct d3d12_command_queue *command_queue, struct d3d12_fence *fence,
         uint64_t update_count);
 
+struct d3d12_blocked_wait
+{
+    struct list entry;
+    struct d3d12_fence *fence;
+    struct d3d12_device *device;
+};
+
+static pthread_mutex_t blocked_waits_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct list blocked_waits = LIST_INIT(blocked_waits);
+
+static bool d3d12_blocked_wait_register(struct d3d12_blocked_wait *wait,
+        struct d3d12_fence *fence, struct d3d12_device *device)
+{
+    bool abandoned;
+
+    wait->fence = fence;
+    wait->device = device;
+
+    pthread_mutex_lock(&blocked_waits_lock);
+    abandoned = device->waits_abandoned;
+    if (!abandoned)
+        list_add_tail(&blocked_waits, &wait->entry);
+    pthread_mutex_unlock(&blocked_waits_lock);
+    return !abandoned;
+}
+
+static void d3d12_blocked_wait_unregister(struct d3d12_blocked_wait *wait)
+{
+    pthread_mutex_lock(&blocked_waits_lock);
+    list_remove(&wait->entry);
+    pthread_mutex_unlock(&blocked_waits_lock);
+}
+
+void vkd3d_abandon_waits(ID3D12Device *iface)
+{
+    struct d3d12_device *device = impl_from_ID3D12Device((d3d12_device_iface *)iface);
+    struct d3d12_fence *fences[64];
+    struct d3d12_blocked_wait *wait;
+    size_t count, i;
+    bool more;
+
+    do
+    {
+        count = 0;
+        more = false;
+
+        pthread_mutex_lock(&blocked_waits_lock);
+        device->waits_abandoned = true;
+        LIST_FOR_EACH_ENTRY(wait, &blocked_waits, struct d3d12_blocked_wait, entry)
+        {
+            if (wait->device != device)
+                continue;
+            if (count == ARRAY_SIZE(fences))
+            {
+                more = true;
+                break;
+            }
+            d3d12_fence_inc_ref(wait->fence);
+            fences[count++] = wait->fence;
+        }
+        pthread_mutex_unlock(&blocked_waits_lock);
+
+        for (i = 0; i < count; i++)
+        {
+            d3d12_fence_lock(fences[i]);
+            pthread_cond_broadcast(&fences[i]->cond);
+            d3d12_fence_unlock(fences[i]);
+            d3d12_fence_dec_ref(fences[i]);
+        }
+    }
+    while (more);
+}
+
 static bool d3d12_fence_block_until_pending_value_reaches_locked(
         struct d3d12_fence *fence, UINT64 pending_value, UINT64 ticket,
         struct d3d12_command_queue *command_queue,
@@ -1215,8 +1291,24 @@ static bool d3d12_fence_block_until_pending_value_reaches_locked(
 
         if (pending_value > fence->max_pending_virtual_timeline_value)
         {
+            struct d3d12_blocked_wait blocked;
+
+            if (!d3d12_blocked_wait_register(&blocked, fence, fence->device))
+            {
+                d3d12_fence_drop_wait_ticket_locked(fence, ticket);
+                return false;
+            }
+
             TRACE("Blocking wait on fence %p until it reaches 0x%"PRIx64".\n", fence, pending_value);
             pthread_cond_wait(&fence->cond, &fence->mutex);
+            d3d12_blocked_wait_unregister(&blocked);
+
+            if (fence->device->waits_abandoned &&
+                    pending_value > fence->max_pending_virtual_timeline_value)
+            {
+                d3d12_fence_drop_wait_ticket_locked(fence, ticket);
+                return false;
+            }
 
             /* We dropped the lock, so there might have been new tickets being added to ticket counter,
              * or the ticket might have been satisfied through a pulsing event race. */
@@ -1279,6 +1371,20 @@ static bool d3d12_fence_block_until_pending_value_reaches_locked(
     }
 
     return has_unsatisfied_wait;
+}
+
+static void d3d12_fence_drop_wait_ticket_locked(struct d3d12_fence *fence, UINT64 ticket)
+{
+    size_t i;
+
+    for (i = 0; i < fence->wait_tickets_count; i++)
+    {
+        if (fence->wait_tickets[i].ticket == ticket)
+        {
+            fence->wait_tickets[i] = fence->wait_tickets[--fence->wait_tickets_count];
+            return;
+        }
+    }
 }
 
 static void d3d12_fence_update_pending_value_locked_and_broadcast(struct d3d12_fence *fence)
