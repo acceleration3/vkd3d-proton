@@ -181,6 +181,7 @@ struct vkd3d_vulkan_info
     bool EXT_external_memory_host;
     bool KHR_external_memory_fd;
     bool EXT_external_memory_dma_buf;
+    bool EXT_image_drm_format_modifier;
     bool KHR_external_semaphore_fd;
     bool EXT_shader_image_atomic_int64;
     bool EXT_mesh_shader;
