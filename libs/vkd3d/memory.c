@@ -1127,7 +1127,8 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
 
         if (host_gated && !vkd3d_vram_gate->take_host(memory_info->vram_account, size))
         {
-            WARN("System memory allocation of %"PRIu64" KiB refused: over the VM's host memory budget.\n", size / 1024);
+            ERR("System memory allocation of %"PRIu64" KiB refused: over the VM's host memory budget (%"PRIu64" MiB free).\n",
+                    size / 1024, vkd3d_vram_gate->free_bytes(memory_info->vram_account) >> 20);
             vkd3d_vram_refused = true;
             if (rebar_budget && respect_budget)
                 pthread_mutex_unlock(&memory_info->budget_lock);
@@ -1136,7 +1137,9 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
 
         if (vram_gated && !vkd3d_vram_gate->take(memory_info->vram_account, size))
         {
-            WARN("Device-local allocation of %"PRIu64" KiB refused: over the guest's video memory cap.\n", size / 1024);
+            ERR("Device-local allocation of %"PRIu64" KiB refused: over the guest's video memory cap (%"PRIu64" MiB free of %"PRIu64" MiB).\n",
+                    size / 1024, vkd3d_vram_gate->free_bytes(memory_info->vram_account) >> 20,
+                    vkd3d_vram_gate->cap(memory_info->vram_account) >> 20);
             vkd3d_vram_refused = true;
             if (rebar_budget && respect_budget)
                 pthread_mutex_unlock(&memory_info->budget_lock);
@@ -1149,6 +1152,8 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
         vr = VK_CALL(vkAllocateMemory(device->vk_device, &allocate_info, NULL, &allocation->vk_memory));
         if (vr == VK_SUCCESS)
             break;
+
+        ERR("vkAllocateMemory of %"PRIu64" KiB failed: %d.\n", size / 1024, vr);
 
         if (vram_gated)
             vkd3d_vram_gate->give(memory_info->vram_account, size);
