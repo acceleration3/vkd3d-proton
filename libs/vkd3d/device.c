@@ -123,6 +123,7 @@ static const struct vkd3d_optional_extension_info optional_device_extensions[] =
     VK_EXTENSION(EXT_EXTERNAL_MEMORY_HOST, EXT_external_memory_host),
     VK_EXTENSION(KHR_EXTERNAL_MEMORY_FD, KHR_external_memory_fd),
     VK_EXTENSION(EXT_EXTERNAL_MEMORY_DMA_BUF, EXT_external_memory_dma_buf),
+    VK_EXTENSION(KHR_EXTERNAL_SEMAPHORE_FD, KHR_external_semaphore_fd),
     VK_EXTENSION(EXT_SHADER_IMAGE_ATOMIC_INT64, EXT_shader_image_atomic_int64),
     VK_EXTENSION(EXT_MESH_SHADER, EXT_mesh_shader),
     VK_EXTENSION(EXT_MUTABLE_DESCRIPTOR_TYPE, EXT_mutable_descriptor_type),

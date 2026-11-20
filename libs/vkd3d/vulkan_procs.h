@@ -297,6 +297,10 @@ VK_DEVICE_EXT_PFN(vkGetMemoryHostPointerPropertiesEXT)
 
 /* VK_KHR_external_memory_fd */
 VK_DEVICE_EXT_PFN(vkGetMemoryFdPropertiesKHR)
+VK_DEVICE_EXT_PFN(vkGetMemoryFdKHR)
+
+/* VK_KHR_external_semaphore_fd */
+VK_DEVICE_EXT_PFN(vkGetSemaphoreFdKHR)
 
 /* VK_EXT_mesh_shader */
 VK_DEVICE_EXT_PFN(vkCmdDrawMeshTasksEXT)

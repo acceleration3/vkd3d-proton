@@ -4,4 +4,6 @@ EXPORTS
     D3D12GetInterface
     vkd3d_proton_open_heap_from_host_pointer
     vkd3d_proton_open_heap_from_dmabuf
+    vkd3d_proton_export_image
+    vkd3d_proton_export_fence
     D3D12SDKVersion DATA PRIVATE

@@ -413,7 +413,12 @@ HRESULT vkd3d_create_timeline_semaphore(struct d3d12_device *device, uint64_t in
     {
         external_semaphore_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO;
         external_semaphore_info.pNext = &type_info;
+#ifdef _WIN32
         external_semaphore_info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT;
+#else
+        /* accel-virt: natively, a shared fence leaves as an fd (vkd3d_export_fence). */
+        external_semaphore_info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+#endif
 
         external_semaphore_properties.sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES;
         external_semaphore_properties.pNext = NULL;
@@ -423,7 +428,7 @@ HRESULT vkd3d_create_timeline_semaphore(struct d3d12_device *device, uint64_t in
 
         if (!(external_semaphore_properties.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT) ||
             !(external_semaphore_properties.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT) ||
-            !(external_semaphore_properties.exportFromImportedHandleTypes & VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT))
+            !(external_semaphore_properties.exportFromImportedHandleTypes & external_semaphore_info.handleType))
         {
             WARN("D3D12-Fence shared timeline semaphores not supported by host.\n");
             return E_NOTIMPL;
@@ -431,7 +436,7 @@ HRESULT vkd3d_create_timeline_semaphore(struct d3d12_device *device, uint64_t in
 
         export_info.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
         export_info.pNext = NULL;
-        export_info.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT;
+        export_info.handleTypes = external_semaphore_info.handleType;
 
         type_info.pNext = &export_info;
     }
@@ -27824,4 +27829,31 @@ bool vk_image_memory_barrier_for_initial_transition(const struct d3d12_resource 
           resource, barrier->oldLayout, barrier->newLayout);
 
     return true;
+}
+
+/* accel-virt: a shared fence's timeline semaphore as an fd, which another
+ * Vulkan device on the GPU imports to wait for the values queues signal. */
+HRESULT vkd3d_export_fence(ID3D12Fence *iface, int *fd)
+{
+    const struct vkd3d_vk_device_procs *vk_procs;
+    VkSemaphoreGetFdInfoKHR fd_info;
+    struct d3d12_shared_fence *fence;
+
+    if (!iface || !fd || !is_shared_ID3D12Fence(iface))
+        return E_INVALIDARG;
+    fence = shared_impl_from_ID3D12Fence(iface);
+    vk_procs = &fence->device->vk_procs;
+    if (!vk_procs->vkGetSemaphoreFdKHR)
+        return E_NOTIMPL;
+
+    fd_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+    fd_info.pNext = NULL;
+    fd_info.semaphore = fence->timeline_semaphore;
+    fd_info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+    if (VK_CALL(vkGetSemaphoreFdKHR(fence->device->vk_device, &fd_info, fd)) != VK_SUCCESS)
+    {
+        *fd = -1;
+        return E_FAIL;
+    }
+    return S_OK;
 }
