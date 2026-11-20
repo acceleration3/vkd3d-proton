@@ -20,6 +20,7 @@
 #define VKD3D_DBG_CHANNEL VKD3D_DBG_CHANNEL_API
 
 #include "vkd3d_private.h"
+#include "av_line_coverage.h"
 #include "vkd3d_descriptor_debug.h"
 #include "vkd3d_rw_spinlock.h"
 #include "vkd3d_timestamp_profiler.h"
@@ -376,6 +377,37 @@ static HRESULT vkd3d_create_pipeline_layout_for_stage_mask(struct d3d12_device *
     return vkd3d_create_pipeline_layout(device, set_layout_count, set_layouts,
             range.stageFlags ? 1 : 0, &range,
             &bind_point_layout->vk_pipeline_layout);
+}
+
+static HRESULT d3d12_root_signature_create_graphics_layout(struct d3d12_root_signature *root_signature,
+        struct d3d12_device *device)
+{
+    const VkPhysicalDeviceLimits *limits = &device->device_info.properties2.properties.limits;
+    struct d3d12_bind_point_layout *layout = &root_signature->graphics;
+    VkPushConstantRange ranges[2];
+    uint32_t count = 0, offset;
+
+    root_signature->line_coverage_offset = UINT32_MAX;
+
+    ranges[0].stageFlags = layout->push_constant_range.stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS;
+    ranges[0].offset = layout->push_constant_range.offset;
+    ranges[0].size = layout->push_constant_range.size;
+    layout->vk_push_stages = ranges[0].stageFlags;
+    if (ranges[0].stageFlags)
+        count++;
+
+    offset = ranges[0].stageFlags ? align(ranges[0].offset + ranges[0].size, 8) : 0;
+    if (d3d12_device_emulates_line_coverage(device) && offset + 2 * sizeof(float) <= limits->maxPushConstantsSize)
+    {
+        ranges[count].stageFlags = VK_SHADER_STAGE_GEOMETRY_BIT;
+        ranges[count].offset = offset;
+        ranges[count].size = 2 * sizeof(float);
+        root_signature->line_coverage_offset = offset;
+        count++;
+    }
+
+    return vkd3d_create_pipeline_layout(device, layout->num_set_layouts, root_signature->set_layouts,
+            count, ranges, &layout->vk_pipeline_layout);
 }
 
 struct d3d12_root_signature_info
@@ -1952,6 +1984,7 @@ static HRESULT d3d12_root_signature_init_global(struct d3d12_root_signature *roo
             return hr;
 
         /* Only relevant to be able to share some code between heap and legacy. */
+        root_signature->line_coverage_offset = UINT32_MAX;
         root_signature->graphics.vk_push_stages = VK_SHADER_STAGE_ALL;
         root_signature->mesh.vk_push_stages = VK_SHADER_STAGE_ALL;
         root_signature->compute.vk_push_stages = VK_SHADER_STAGE_ALL;
@@ -1979,10 +2012,7 @@ static HRESULT d3d12_root_signature_init_global(struct d3d12_root_signature *roo
          * For graphics we can generally rely on visibility mask, but not so for compute and raygen,
          * since they use ALL visibility. */
 
-        if (FAILED(hr = vkd3d_create_pipeline_layout_for_stage_mask(
-                device, root_signature->graphics.num_set_layouts, root_signature->set_layouts,
-                &root_signature->graphics.push_constant_range,
-                VK_SHADER_STAGE_ALL_GRAPHICS, &root_signature->graphics)))
+        if (FAILED(hr = d3d12_root_signature_create_graphics_layout(root_signature, device)))
             return hr;
 
         if (device->device_info.mesh_shader_features.meshShader && device->device_info.mesh_shader_features.taskShader)
@@ -4940,6 +4970,121 @@ static void d3d12_pipeline_state_graphics_load_spirv_from_cached_state(
     }
 }
 
+static bool d3d12_pipeline_state_wants_line_coverage(struct d3d12_pipeline_state *state,
+        const struct d3d12_pipeline_state_desc *desc)
+{
+    struct d3d12_graphics_pipeline_state *graphics = &state->graphics;
+
+    if (state->pipeline_type != VKD3D_PIPELINE_TYPE_GRAPHICS ||
+            desc->rasterizer_state.LineRasterizationMode != D3D12_LINE_RASTERIZATION_MODE_ALPHA_ANTIALIASED ||
+            !d3d12_device_emulates_line_coverage(state->device) ||
+            graphics->rs_desc.rasterizerDiscardEnable ||
+            !(graphics->stage_flags & VK_SHADER_STAGE_FRAGMENT_BIT) ||
+            (graphics->primitive_topology_type != D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE &&
+             graphics->primitive_topology_type != D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH))
+        return false;
+
+    if (graphics->stage_flags & VK_SHADER_STAGE_GEOMETRY_BIT)
+    {
+        FIXME_ONCE("Antialiased lines from a geometry shader are drawn aliased.\n");
+        return false;
+    }
+
+    if (state->root_signature->line_coverage_offset == UINT32_MAX)
+    {
+        FIXME_ONCE("No push constant room for antialiased lines, drawing them aliased.\n");
+        return false;
+    }
+
+    return true;
+}
+
+static void d3d12_pipeline_state_add_line_coverage(struct d3d12_pipeline_state *state)
+{
+    const VkPhysicalDeviceLimits *limits = &state->device->device_info.properties2.properties.limits;
+    struct d3d12_graphics_pipeline_state *graphics = &state->graphics;
+    unsigned int producer = UINT32_MAX, fragment = UINT32_MAX, i;
+    struct av_lc_varying varyings[32], inputs[32];
+    uint32_t found = 0, input_count = 0, location, components;
+    uint32_t *gs_words = NULL, *fs_words = NULL;
+    size_t gs_count = 0, fs_count = 0;
+    struct vkd3d_shader_code *gs;
+    int status;
+
+    for (i = 0; i < graphics->stage_count; i++)
+    {
+        if (graphics->cached_desc.bytecode_stages[i] == VK_SHADER_STAGE_VERTEX_BIT ||
+                graphics->cached_desc.bytecode_stages[i] == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
+            producer = i;
+        if (graphics->cached_desc.bytecode_stages[i] == VK_SHADER_STAGE_FRAGMENT_BIT)
+            fragment = i;
+    }
+
+    if (producer == UINT32_MAX || fragment == UINT32_MAX || graphics->stage_count >= VKD3D_MAX_SHADER_STAGES ||
+            !graphics->code[producer].size || !graphics->code[fragment].size)
+        return;
+
+    if (graphics->cached_desc.bytecode_stages[producer] == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT &&
+            (!(graphics->code[producer].meta.flags & VKD3D_SHADER_META_FLAG_EMITS_LINES) ||
+             (graphics->code[producer].meta.flags & VKD3D_SHADER_META_FLAG_POINT_MODE_TESSELLATION)))
+        return;
+
+    status = av_lc_reflect(graphics->code[producer].code, graphics->code[producer].size / sizeof(uint32_t),
+            AV_LC_SC_OUTPUT, varyings, ARRAY_SIZE(varyings), &found);
+    if (status == AV_LC_OK)
+        status = av_lc_reflect(graphics->code[fragment].code, graphics->code[fragment].size / sizeof(uint32_t),
+                AV_LC_SC_INPUT, inputs, ARRAY_SIZE(inputs), &input_count);
+
+    location = max(av_lc_next_location(varyings, found), av_lc_next_location(inputs, input_count));
+    components = av_lc_output_components(varyings, found);
+
+    if (status == AV_LC_OK && (location >= min(limits->maxFragmentInputComponents, limits->maxGeometryOutputComponents) / 4 ||
+            components > limits->maxGeometryOutputComponents || 4 * components > limits->maxGeometryTotalOutputComponents))
+        status = AV_LC_TOO_MANY;
+
+    if (status == AV_LC_OK)
+        status = av_lc_patch_fragment_shader(graphics->code[fragment].code,
+                graphics->code[fragment].size / sizeof(uint32_t), location, &fs_words, &fs_count);
+
+    if (status == AV_LC_OK)
+        status = av_lc_build_geometry_shader(varyings, found, 0, location,
+                state->root_signature->line_coverage_offset, &gs_words, &gs_count);
+
+    if (status != AV_LC_OK)
+    {
+        if (status != AV_LC_UNCHANGED)
+            FIXME("Antialiased lines drawn aliased, line coverage not built (%d).\n", status);
+        free(fs_words);
+        free(gs_words);
+        return;
+    }
+
+    vkd3d_shader_free_shader_code(&graphics->code[fragment]);
+    graphics->code[fragment].code = fs_words;
+    graphics->code[fragment].size = fs_count * sizeof(uint32_t);
+
+    i = graphics->stage_count++;
+    graphics->cached_desc.bytecode[i].pShaderBytecode = NULL;
+    graphics->cached_desc.bytecode[i].BytecodeLength = 0;
+    graphics->cached_desc.bytecode_stages[i] = VK_SHADER_STAGE_GEOMETRY_BIT;
+    gs = &graphics->code[i];
+    memset(gs, 0, sizeof(*gs));
+    gs->code = gs_words;
+    gs->size = gs_count * sizeof(uint32_t);
+    gs->meta.gs_input_topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    gs->meta.flags = VKD3D_SHADER_META_FLAG_EMITS_TRIANGLES;
+    graphics->stage_flags |= VK_SHADER_STAGE_GEOMETRY_BIT;
+
+    graphics->rs_desc.polygonMode = VK_POLYGON_MODE_FILL;
+    graphics->rs_desc.cullMode = VK_CULL_MODE_NONE;
+    graphics->rs_desc.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    if (graphics->rs_conservative_info.sType)
+        vk_remove_struct(&graphics->rs_desc, VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_CONSERVATIVE_STATE_CREATE_INFO_EXT);
+
+    graphics->line_coverage = true;
+    graphics->line_coverage_offset = state->root_signature->line_coverage_offset;
+}
+
 static HRESULT d3d12_pipeline_state_graphics_create_shader_stages(
         struct d3d12_pipeline_state *state, struct d3d12_device *device,
         const struct d3d12_pipeline_state_desc *desc)
@@ -4968,7 +5113,13 @@ static HRESULT d3d12_pipeline_state_graphics_create_shader_stages(
                     &graphics->cached_desc.bytecode[i], &graphics->code[i], debug_output)))
                 return hr;
         }
+    }
 
+    if (d3d12_pipeline_state_wants_line_coverage(state, desc))
+        d3d12_pipeline_state_add_line_coverage(state);
+
+    for (i = 0; i < graphics->stage_count; i++)
+    {
         if (FAILED(hr = vkd3d_setup_shader_stage(state, device,
                 &graphics->stages[i],
                 graphics->cached_desc.bytecode_stages[i],
@@ -6093,7 +6244,8 @@ static HRESULT d3d12_pipeline_state_init_graphics_spirv(struct d3d12_pipeline_st
     struct d3d12_device *device = state->device;
     HRESULT hr;
 
-    d3d12_pipeline_state_graphics_load_spirv_from_cached_state(state, device, desc, cached_pso);
+    if (!d3d12_pipeline_state_wants_line_coverage(state, desc))
+        d3d12_pipeline_state_graphics_load_spirv_from_cached_state(state, device, desc, cached_pso);
     if (FAILED(hr = d3d12_pipeline_state_graphics_create_shader_stages(state, device, desc)))
         return hr;
 
