@@ -1395,6 +1395,12 @@ HRESULT WINAPI DLLEXPORT vkd3d_proton_set_indirect_va_table(ID3D12GraphicsComman
     return vkd3d_set_indirect_va_table(list, table_va);
 }
 
+HRESULT WINAPI DLLEXPORT vkd3d_proton_create_exported_heap(ID3D12Device *device, const D3D12_HEAP_DESC *desc,
+        int *fd, REFIID iid, void **heap)
+{
+    return vkd3d_create_exported_heap(device, desc, fd, iid, heap);
+}
+
 HRESULT WINAPI DLLEXPORT vkd3d_proton_open_heap_from_host_pointer(ID3D12Device *device, void *address,
         UINT64 size, REFIID iid, void **heap)
 {

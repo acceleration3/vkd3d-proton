@@ -300,7 +300,7 @@ static HRESULT validate_heap_desc(struct d3d12_device *device, const D3D12_HEAP_
 }
 
 static HRESULT d3d12_heap_init(struct d3d12_heap *heap, struct d3d12_device *device,
-        const D3D12_HEAP_DESC *desc, void* host_address, int import_fd)
+        const D3D12_HEAP_DESC *desc, void* host_address, int import_fd, bool export_dma_buf)
 {
     struct vkd3d_allocate_heap_memory_info alloc_info;
     HRESULT hr;
@@ -331,6 +331,7 @@ static HRESULT d3d12_heap_init(struct d3d12_heap *heap, struct d3d12_device *dev
     alloc_info.host_ptr = host_address;
     alloc_info.has_import_fd = import_fd >= 0;
     alloc_info.import_fd = import_fd;
+    alloc_info.export_dma_buf = export_dma_buf;
 
     if ((alloc_info.heap_desc.Flags & D3D12_HEAP_FLAG_DENY_BUFFERS) &&
         d3d12_device_allow_image_heap_suballocation(device))
@@ -413,8 +414,8 @@ HRESULT d3d12_heap_create(struct d3d12_device *device, const D3D12_HEAP_DESC *de
 
 /* A heap over pages the caller maps at host_address, imported as the dma-buf
  * import_fd when that is not negative (the caller keeps its descriptor). */
-HRESULT d3d12_heap_create_imported(struct d3d12_device *device, const D3D12_HEAP_DESC *desc,
-        void *host_address, int import_fd, struct d3d12_heap **heap)
+static HRESULT d3d12_heap_create_with(struct d3d12_device *device, const D3D12_HEAP_DESC *desc,
+        void *host_address, int import_fd, bool export_dma_buf, struct d3d12_heap **heap)
 {
     struct d3d12_heap *object;
     HRESULT hr;
@@ -422,7 +423,7 @@ HRESULT d3d12_heap_create_imported(struct d3d12_device *device, const D3D12_HEAP
     if (!(object = vkd3d_malloc(sizeof(*object))))
         return E_OUTOFMEMORY;
 
-    if (FAILED(hr = d3d12_heap_init(object, device, desc, host_address, import_fd)))
+    if (FAILED(hr = d3d12_heap_init(object, device, desc, host_address, import_fd, export_dma_buf)))
     {
         vkd3d_free(object);
         return hr;
@@ -434,4 +435,16 @@ HRESULT d3d12_heap_create_imported(struct d3d12_device *device, const D3D12_HEAP
 
     *heap = object;
     return S_OK;
+}
+
+HRESULT d3d12_heap_create_imported(struct d3d12_device *device, const D3D12_HEAP_DESC *desc,
+        void *host_address, int import_fd, struct d3d12_heap **heap)
+{
+    return d3d12_heap_create_with(device, desc, host_address, import_fd, false, heap);
+}
+
+HRESULT d3d12_heap_create_exported(struct d3d12_device *device, const D3D12_HEAP_DESC *desc,
+        struct d3d12_heap **heap)
+{
+    return d3d12_heap_create_with(device, desc, NULL, -1, true, heap);
 }
