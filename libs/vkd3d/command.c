@@ -11782,6 +11782,26 @@ static void d3d12_command_list_end_transfer_batch(struct d3d12_command_list *lis
     }
 }
 
+static void d3d12_command_list_order_after_marker_out(struct d3d12_command_list *list)
+{
+    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
+    VkMemoryBarrier2 barrier;
+    VkDependencyInfo dep_info;
+
+    memset(&barrier, 0, sizeof(barrier));
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+
+    memset(&dep_info, 0, sizeof(dep_info));
+    dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep_info.memoryBarrierCount = 1;
+    dep_info.pMemoryBarriers = &barrier;
+    VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
+}
+
 static void d3d12_command_list_end_wbi_batch(struct d3d12_command_list *list)
 {
     const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
@@ -11832,6 +11852,8 @@ static void d3d12_command_list_end_wbi_batch(struct d3d12_command_list *list)
             VK_CALL(vkCmdWriteBufferMarkerAMD(list->cmd.vk_command_buffer,
                     list->wbi_batch.stages[i], list->wbi_batch.buffers[i],
                     list->wbi_batch.offsets[i], list->wbi_batch.values[i]));
+            if (list->wbi_batch.stages[i] == VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT)
+                d3d12_command_list_order_after_marker_out(list);
         }
     }
 
@@ -20426,6 +20448,8 @@ static void STDMETHODCALLTYPE d3d12_command_list_WriteBufferImmediate(d3d12_comm
         {
             VK_CALL(vkCmdWriteBufferMarkerAMD(list->cmd.vk_command_buffer, stage,
                     resource->vk_buffer, offset, parameters[i].Value));
+            if (stage == VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT && !(list->rendering_info.state_flags & VKD3D_RENDERING_ACTIVE))
+                d3d12_command_list_order_after_marker_out(list);
         }
 
         if ((do_flush && i + 1 == count) || list->wbi_batch.batch_len == VKD3D_MAX_WBI_BATCH_SIZE)
