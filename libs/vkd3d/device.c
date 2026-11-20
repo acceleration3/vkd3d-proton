@@ -1016,6 +1016,12 @@ bool d3d12_device_supports_variable_shading_rate_tier_2(struct d3d12_device *dev
             d3d12_determine_shading_rate_image_tile_size(device) != 0;
 }
 
+bool d3d12_device_emulates_line_coverage(struct d3d12_device *device)
+{
+    return !device->device_info.line_rasterization_features.smoothLines &&
+            device->device_info.features2.features.geometryShader;
+}
+
 static D3D12_VARIABLE_SHADING_RATE_TIER d3d12_device_determine_variable_shading_rate_tier(struct d3d12_device *device)
 {
     if (!d3d12_device_supports_variable_shading_rate_tier_1(device))
@@ -2478,6 +2484,7 @@ static HRESULT vkd3d_init_device_caps(struct d3d12_device *device,
     VkPhysicalDevice physical_device = device->vk_physical_device;
     struct vkd3d_vulkan_info *vulkan_info = &device->vk_info;
     VkPhysicalDeviceFeatures *features;
+    char withheld[256];
     bool single_storage_texel;
     bool single_uniform_texel;
 
@@ -2610,6 +2617,14 @@ static HRESULT vkd3d_init_device_caps(struct d3d12_device *device,
     line_rasterization->stippledRectangularLines = VK_FALSE;
     line_rasterization->stippledBresenhamLines = VK_FALSE;
     line_rasterization->stippledSmoothLines = VK_FALSE;
+
+    if (vkd3d_get_env_var("AV_TEST_HOST_WITHOUT", withheld, sizeof(withheld)))
+    {
+        if (strstr(withheld, "smoothLines"))
+            line_rasterization->smoothLines = VK_FALSE;
+        if (strstr(withheld, "deviceGeneratedCommands"))
+            physical_device_info->device_generated_commands_features.deviceGeneratedCommands = VK_FALSE;
+    }
 
     /* Don't need or require this. Dynamic patch control points is nice, but not required. */
     physical_device_info->extended_dynamic_state2_features.extendedDynamicState2LogicOp = VK_FALSE;

@@ -7692,6 +7692,12 @@ static void d3d12_command_list_check_vbo_alignment(struct d3d12_command_list *li
     }
 }
 
+static bool d3d12_command_list_has_line_coverage(const struct d3d12_command_list *list)
+{
+    return list->state && list->state->pipeline_type == VKD3D_PIPELINE_TYPE_GRAPHICS &&
+            list->state->graphics.line_coverage;
+}
+
 static bool d3d12_command_list_update_graphics_pipeline(struct d3d12_command_list *list,
         enum vkd3d_pipeline_type pipeline_type)
 {
@@ -7799,6 +7805,9 @@ static bool d3d12_command_list_update_graphics_pipeline(struct d3d12_command_lis
             list->dynamic_state.dirty_vbos = ~0u;
         list->dynamic_state.dirty_flags |= new_active_flags & ~list->dynamic_state.active_flags;
         list->command_buffer_pipeline = vk_pipeline;
+
+        if (d3d12_command_list_has_line_coverage(list))
+            list->dynamic_state.dirty_flags |= VKD3D_DYNAMIC_STATE_VIEWPORT;
     }
 
     /* If no render targets are bound, we use PSO state to determine the sample count, but we do
@@ -8501,6 +8510,22 @@ static bool d3d12_command_list_update_raygen_state(struct d3d12_command_list *li
     return true;
 }
 
+static void d3d12_command_list_push_line_coverage(struct d3d12_command_list *list)
+{
+    const struct d3d12_root_signature *root_signature = list->graphics_bindings.root_signature;
+    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
+    const VkViewport *viewport = &list->dynamic_state.viewports[0];
+    float size[2];
+
+    if (!root_signature || root_signature->line_coverage_offset != list->state->graphics.line_coverage_offset)
+        return;
+
+    size[0] = viewport->width < 0.0f ? -viewport->width : viewport->width;
+    size[1] = viewport->height < 0.0f ? -viewport->height : viewport->height;
+    VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, root_signature->graphics.vk_pipeline_layout,
+            VK_SHADER_STAGE_GEOMETRY_BIT, root_signature->line_coverage_offset, sizeof(size), size));
+}
+
 static void d3d12_command_list_update_dynamic_state(struct d3d12_command_list *list)
 {
     const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
@@ -8522,6 +8547,9 @@ static void d3d12_command_list_update_dynamic_state(struct d3d12_command_list *l
         {
             VK_CALL(vkCmdSetViewportWithCount(list->cmd.vk_command_buffer,
                     dyn_state->viewport_count, dyn_state->viewports));
+
+            if (d3d12_command_list_has_line_coverage(list))
+                d3d12_command_list_push_line_coverage(list);
         }
 
         if (dyn_state->dirty_flags & VKD3D_DYNAMIC_STATE_SCISSOR)
@@ -14850,6 +14878,9 @@ static void d3d12_command_list_set_root_signature(struct d3d12_command_list *lis
 
     if (root_signature)
         bindings->static_sampler_set = root_signature->vk_sampler_set;
+
+    if (bindings == &list->graphics_bindings && d3d12_command_list_has_line_coverage(list))
+        list->dynamic_state.dirty_flags |= VKD3D_DYNAMIC_STATE_VIEWPORT;
 
     d3d12_command_list_invalidate_root_parameters(list, bindings, true, NULL);
 }
