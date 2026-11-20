@@ -2600,7 +2600,6 @@ static HRESULT vkd3d_init_device_caps(struct d3d12_device *device,
     physical_device_info->ray_tracing_pipeline_features.rayTracingPipelineShaderGroupHandleCaptureReplayMixed = VK_FALSE;
 
     line_rasterization = &physical_device_info->line_rasterization_features;
-    line_rasterization->bresenhamLines = VK_FALSE;
     line_rasterization->stippledRectangularLines = VK_FALSE;
     line_rasterization->stippledBresenhamLines = VK_FALSE;
     line_rasterization->stippledSmoothLines = VK_FALSE;

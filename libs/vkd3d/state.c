@@ -3812,7 +3812,8 @@ static void rs_line_info_from_d3d12(struct d3d12_device *device, VkPipelineRaste
     switch (d3d12_desc->LineRasterizationMode)
     {
         case D3D12_LINE_RASTERIZATION_MODE_ALIASED:
-            /* TODO: I think we're supposed to use bresenham here? That is likely the default anyway. */
+            if (device->device_info.line_rasterization_features.bresenhamLines)
+                vk_line_info->lineRasterizationMode = VK_LINE_RASTERIZATION_MODE_BRESENHAM_EXT;
             break;
 
         case D3D12_LINE_RASTERIZATION_MODE_ALPHA_ANTIALIASED:
