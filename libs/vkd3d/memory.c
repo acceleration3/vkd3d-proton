@@ -1378,18 +1378,11 @@ static HRESULT vkd3d_import_fd_memory(struct d3d12_device *device, int fd,
             VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fd_properties)) != VK_SUCCESS)
         return E_INVALIDARG;
 
-    if (SUCCEEDED(hr = vkd3d_import_fd_attempt(device, fd, size, type_flags,
-            type_mask & fd_properties.memoryTypeBits, pNext, allocation)))
+    /* Only the types the dma-buf lists are tried, the first time in the order of the heap's preferences: NVIDIA does
+     * not survive refused imports, after a few of them every allocation of the process fails. */
+    untried = fd_properties.memoryTypeBits & type_mask & ((1u << device->memory_properties.memoryTypeCount) - 1u);
+    if (SUCCEEDED(hr = vkd3d_import_fd_attempt(device, fd, size, type_flags, untried, pNext, allocation)))
         return hr;
-
-    untried = type_mask & ((1u << device->memory_properties.memoryTypeCount) - 1u);
-    while (untried)
-    {
-        uint32_t type_index = vkd3d_bitmask_iter32(&untried);
-
-        if (SUCCEEDED(hr = vkd3d_import_fd_attempt(device, fd, size, 0, 1u << type_index, pNext, allocation)))
-            return hr;
-    }
 
     WARN("Failed to import dma-buf memory, hr %#x, memory types %#x of %#x.\n",
             hr, fd_properties.memoryTypeBits, type_mask);
