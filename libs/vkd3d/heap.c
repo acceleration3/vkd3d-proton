@@ -428,6 +428,8 @@ HRESULT d3d12_heap_create_imported(struct d3d12_device *device, const D3D12_HEAP
         return hr;
     }
 
+    object->embedder_heap = import_fd >= 0;
+
     TRACE("Created heap %p.\n", object);
 
     *heap = object;

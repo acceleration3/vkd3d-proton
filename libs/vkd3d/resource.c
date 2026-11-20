@@ -4720,7 +4720,7 @@ HRESULT d3d12_resource_create_placed(struct d3d12_device *device, const D3D12_RE
         goto fail;
     }
 
-    if (heap_offset & (object->placed_alignment - 1u))
+    if (!heap->embedder_heap && (heap_offset & (object->placed_alignment - 1u)))
     {
         WARN("Heap offset %#"PRIx64" not a multiple of resource alignment %#"PRIx64".\n",
                 heap_offset, object->placed_alignment);
