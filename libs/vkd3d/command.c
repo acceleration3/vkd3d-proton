@@ -15846,6 +15846,12 @@ static void STDMETHODCALLTYPE d3d12_command_list_ClearDepthStencilView(d3d12_com
 
     list->cmd.estimated_cost += VKD3D_COMMAND_COST_LOW;
 
+    if (!dsv_desc->view || !dsv_desc->resource || !dsv_desc->format)
+    {
+        WARN("Clearing a depth stencil view that holds no view.\n");
+        return;
+    }
+
     if (flags & D3D12_CLEAR_FLAG_DEPTH)
         clear_aspects |= VK_IMAGE_ASPECT_DEPTH_BIT;
 
@@ -15979,6 +15985,12 @@ static void STDMETHODCALLTYPE d3d12_command_list_ClearRenderTargetView(d3d12_com
     d3d12_command_list_flush_dgc_batch(list);
 
     list->cmd.estimated_cost += VKD3D_COMMAND_COST_LOW;
+
+    if (!rtv_desc->view || !rtv_desc->resource || !rtv_desc->format)
+    {
+        WARN("Clearing a render target view that holds no view.\n");
+        return;
+    }
 
     if (rtv_desc->format->type == VKD3D_FORMAT_TYPE_UINT)
     {
