@@ -4452,7 +4452,7 @@ static HRESULT d3d12_device_get_format_support(struct d3d12_device *device, D3D1
         {
             data->Support1 |= D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET;
 
-            if (device->device_info.features2.features.logicOp && format->type == VKD3D_FORMAT_TYPE_UINT)
+            if (device->device_info.features2.features.logicOp)
                 data->Support2 |= D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP;
 
             /* This bit seems to only indicate support for AVERAGE resolves and is
