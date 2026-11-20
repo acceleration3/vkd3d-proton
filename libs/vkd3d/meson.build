@@ -37,6 +37,7 @@ vkd3d_shaders =[
   'shaders/cs_execute_indirect_patch.comp',
   'shaders/cs_execute_indirect_patch_debug_ring.comp',
   'shaders/cs_execute_indirect_multi_dispatch.comp',
+  'shaders/cs_rtas_instance_translate.comp',
 
   'shaders/cs_sampler_feedback_decode_buffer_min_mip.comp',
   'shaders/fs_sampler_feedback_decode_image_min_mip.frag',

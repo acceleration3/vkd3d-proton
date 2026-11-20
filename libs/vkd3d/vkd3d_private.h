@@ -5138,6 +5138,27 @@ struct vkd3d_multi_dispatch_indirect_ops
     VkPipeline vk_multi_dispatch_indirect_pipeline;
 };
 
+struct vkd3d_rtas_instance_translate_info
+{
+    VkPipelineLayout vk_pipeline_layout;
+    VkPipeline vk_pipeline;
+};
+
+struct vkd3d_rtas_instance_translate_args
+{
+    VkDeviceAddress source_va;
+    VkDeviceAddress output_va;
+    VkDeviceAddress translation_va;
+    uint32_t instance_count;
+    uint32_t pad;
+};
+
+struct vkd3d_rtas_instance_translate_ops
+{
+    VkPipelineLayout vk_layout;
+    VkPipeline vk_pipeline;
+};
+
 struct vkd3d_execute_indirect_args
 {
     VkDeviceAddress template_va;
@@ -5311,6 +5332,7 @@ struct vkd3d_meta_ops
     struct vkd3d_predicate_ops predicate;
     struct vkd3d_execute_indirect_ops execute_indirect;
     struct vkd3d_multi_dispatch_indirect_ops multi_dispatch_indirect;
+    struct vkd3d_rtas_instance_translate_ops rtas_instance_translate;
     struct vkd3d_dstorage_ops dstorage;
     struct vkd3d_sampler_feedback_resolve_ops sampler_feedback_heap;
     struct vkd3d_sampler_feedback_resolve_ops sampler_feedback_legacy;
@@ -5355,6 +5377,14 @@ void vkd3d_meta_get_predicate_pipeline(struct vkd3d_meta_ops *meta_ops,
 
 void vkd3d_meta_get_multi_dispatch_indirect_pipeline(struct vkd3d_meta_ops *meta_ops,
         struct vkd3d_multi_dispatch_indirect_info *info);
+
+void vkd3d_meta_get_rtas_instance_translate_pipeline(struct vkd3d_meta_ops *meta_ops,
+        struct vkd3d_rtas_instance_translate_info *info);
+
+static inline uint32_t vkd3d_meta_get_rtas_instance_translate_workgroup_size(void)
+{
+    return 64;
+}
 
 static inline uint32_t vkd3d_meta_get_multi_dispatch_indirect_workgroup_size(void)
 {
