@@ -131,6 +131,8 @@ ULONG vkd3d_resource_incref(ID3D12Resource *resource);
 /* The embedder's cap on device-local memory: a table of callbacks, kept by pointer. */
 void vkd3d_set_vram_gate(const void *gate);
 
+void vkd3d_set_teardown_order(const void *order);
+
 /* Releases every submission thread of `device` blocked in a wait for a fence
  * value nothing has been submitted to signal, and makes later such waits
  * return at once: the wait is dropped, which on a device being torn down or
