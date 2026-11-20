@@ -1801,9 +1801,11 @@ static void vkd3d_predicate_ops_cleanup(struct vkd3d_predicate_ops *meta_predica
     for (i = 0; i < VKD3D_PREDICATE_COMMAND_COUNT; i++)
         VK_CALL(vkDestroyPipeline(device->vk_device, meta_predicate_ops->vk_command_pipelines[i], NULL));
     VK_CALL(vkDestroyPipeline(device->vk_device, meta_predicate_ops->vk_resolve_pipeline, NULL));
+    VK_CALL(vkDestroyPipeline(device->vk_device, meta_predicate_ops->vk_copy_buffer_pipeline, NULL));
 
     VK_CALL(vkDestroyPipelineLayout(device->vk_device, meta_predicate_ops->vk_command_pipeline_layout, NULL));
     VK_CALL(vkDestroyPipelineLayout(device->vk_device, meta_predicate_ops->vk_resolve_pipeline_layout, NULL));
+    VK_CALL(vkDestroyPipelineLayout(device->vk_device, meta_predicate_ops->vk_copy_buffer_pipeline_layout, NULL));
 }
 
 static HRESULT vkd3d_predicate_ops_init(struct vkd3d_predicate_ops *meta_predicate_ops,
@@ -1849,6 +1851,11 @@ static HRESULT vkd3d_predicate_ops_init(struct vkd3d_predicate_ops *meta_predica
             &push_constant_range, &meta_predicate_ops->vk_resolve_pipeline_layout)) < 0)
         return hresult_from_vk_result(vr);
 
+    push_constant_range.size = sizeof(struct vkd3d_predicate_copy_buffer_args);
+    if ((vr = vkd3d_meta_create_pipeline_layout(device, 0, NULL,
+            &push_constant_range, &meta_predicate_ops->vk_copy_buffer_pipeline_layout)) < 0)
+        goto fail;
+
     spec_info.mapEntryCount = ARRAY_SIZE(spec_map);
     spec_info.pMapEntries = spec_map;
     spec_info.dataSize = sizeof(struct spec_data);
@@ -1868,6 +1875,11 @@ static HRESULT vkd3d_predicate_ops_init(struct vkd3d_predicate_ops *meta_predica
     if ((vr = vkd3d_meta_create_compute_pipeline(device, sizeof(cs_resolve_predicate), cs_resolve_predicate,
             meta_predicate_ops->vk_resolve_pipeline_layout, NULL, true, NULL,
             &meta_predicate_ops->vk_resolve_pipeline)) < 0)
+        goto fail;
+
+    if ((vr = vkd3d_meta_create_compute_pipeline(device, sizeof(cs_copy_buffer_predicated), cs_copy_buffer_predicated,
+            meta_predicate_ops->vk_copy_buffer_pipeline_layout, NULL, true, NULL,
+            &meta_predicate_ops->vk_copy_buffer_pipeline)) < 0)
         goto fail;
 
     return S_OK;

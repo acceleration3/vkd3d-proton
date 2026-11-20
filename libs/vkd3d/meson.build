@@ -13,6 +13,7 @@ vkd3d_shaders =[
   'shaders/cs_clear_uav_image_3d_float.comp',
   'shaders/cs_clear_uav_image_3d_uint.comp',
   'shaders/cs_emit_nv_memory_decompression_regions.comp',
+  'shaders/cs_copy_buffer_predicated.comp',
   'shaders/cs_emit_nv_memory_decompression_workgroups.comp',
   'shaders/cs_predicate_command.comp',
   'shaders/cs_resolve_binary_queries.comp',

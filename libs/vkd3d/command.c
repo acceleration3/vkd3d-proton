@@ -9569,6 +9569,76 @@ static void STDMETHODCALLTYPE d3d12_command_list_Dispatch(d3d12_command_list_ifa
     d3d12_command_list_check_compute_barrier(list);
 }
 
+static bool d3d12_command_list_copy_buffer_predicated(struct d3d12_command_list *list,
+        struct d3d12_resource *dst_resource, VkDeviceSize dst_offset,
+        struct d3d12_resource *src_resource, VkDeviceSize src_offset, VkDeviceSize byte_count)
+{
+    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
+    const struct vkd3d_predicate_ops *predicate_ops = &list->device->meta_ops.predicate;
+    const VkDeviceSize max_chunk = 1u << 28;
+    struct vkd3d_predicate_copy_buffer_args args;
+    VkDeviceAddress src_va, dst_va;
+    VkDeviceSize chunk, dwords;
+    VkMemoryBarrier2 vk_barrier;
+    VkDependencyInfo dep_info;
+
+    if (!list->predication.enabled_on_command_buffer || list->predication.fallback_enabled)
+        return false;
+
+    if (!byte_count)
+        return true;
+
+    src_va = src_resource->res.va + src_offset;
+    dst_va = dst_resource->res.va + dst_offset;
+
+    d3d12_command_list_invalidate_current_pipeline(list, true);
+    d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, true, &list->graphics_bindings);
+
+    memset(&vk_barrier, 0, sizeof(vk_barrier));
+    vk_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    vk_barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+
+    memset(&dep_info, 0, sizeof(dep_info));
+    dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep_info.memoryBarrierCount = 1;
+    dep_info.pMemoryBarriers = &vk_barrier;
+    VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
+
+    VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+            predicate_ops->vk_copy_buffer_pipeline));
+    d3d12_command_list_update_conditional_rendering_state(list, false);
+
+    while (byte_count)
+    {
+        chunk = min(byte_count, max_chunk);
+        args.src_va = src_va & ~(VkDeviceAddress)3;
+        args.dst_va = dst_va & ~(VkDeviceAddress)3;
+        args.src_skew = (uint32_t)(src_va & 3);
+        args.dst_skew = (uint32_t)(dst_va & 3);
+        args.size = (uint32_t)chunk;
+
+        dwords = (chunk + 3) / 4;
+        VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, predicate_ops->vk_copy_buffer_pipeline_layout,
+                VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args));
+        VK_CALL(vkCmdDispatch(list->cmd.vk_command_buffer, (uint32_t)min((dwords + 63) / 64, 4096), 1, 1));
+
+        src_va += chunk;
+        dst_va += chunk;
+        byte_count -= chunk;
+    }
+
+    vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    vk_barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
+
+    return true;
+}
+
 static void STDMETHODCALLTYPE d3d12_command_list_CopyBufferRegion(d3d12_command_list_iface *iface,
         ID3D12Resource *dst, UINT64 dst_offset, ID3D12Resource *src, UINT64 src_offset, UINT64 byte_count)
 {
@@ -9600,6 +9670,10 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyBufferRegion(d3d12_command_
 
     d3d12_command_list_end_current_render_pass(list, true);
     d3d12_command_list_end_transfer_batch(list, false);
+
+    if (d3d12_command_list_copy_buffer_predicated(list, dst_resource, dst_offset,
+            src_resource, src_offset, byte_count))
+        return;
 
     buffer_copy.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2;
     buffer_copy.pNext = NULL;
@@ -11417,6 +11491,9 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyResource(d3d12_command_list
     {
         assert(d3d12_resource_is_buffer(src_resource));
         assert(src_resource->desc.Width == dst_resource->desc.Width);
+
+        if (d3d12_command_list_copy_buffer_predicated(list, dst_resource, 0, src_resource, 0, dst_resource->desc.Width))
+            return;
 
         vk_buffer_copy.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2;
         vk_buffer_copy.pNext = NULL;
