@@ -1360,6 +1360,11 @@ DLLEXPORT const UINT D3D12SDKVersion = D3D12_SDK_VERSION;
 /* The same heap over a dma-buf of those pages - `address` is where the caller
  * maps it - for a Vulkan driver that refuses a userptr over file-backed memory.
  * The caller keeps `fd`. */
+void WINAPI DLLEXPORT vkd3d_proton_set_vram_gate(const void *gate)
+{
+    vkd3d_set_vram_gate(gate);
+}
+
 HRESULT WINAPI DLLEXPORT vkd3d_proton_open_heap_from_dmabuf(ID3D12Device *device, void *address, int fd,
         UINT64 size, REFIID iid, void **heap)
 {

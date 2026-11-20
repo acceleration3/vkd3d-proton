@@ -11193,6 +11193,10 @@ void vkd3d_memory_info_cleanup(struct vkd3d_memory_info *info,
         struct d3d12_device *device)
 {
     pthread_mutex_destroy(&info->budget_lock);
+
+    if (info->vram_account)
+        vkd3d_vram_gate->close(vkd3d_vram_gate->self, info->vram_account);
+    info->vram_account = NULL;
 }
 
 static uint32_t vkd3d_memory_info_filter_sysmem_memory_types(struct d3d12_device *device,
@@ -11243,6 +11247,11 @@ HRESULT vkd3d_memory_info_init(struct vkd3d_memory_info *info,
 
     if (pthread_mutex_init(&info->budget_lock, NULL) != 0)
         return E_OUTOFMEMORY;
+
+    info->vram_account = NULL;
+    if (vkd3d_vram_gate && vkd3d_vram_gate->size >= sizeof(*vkd3d_vram_gate))
+        info->vram_account = vkd3d_vram_gate->open(vkd3d_vram_gate->self,
+                device->device_info.vulkan_1_1_properties.deviceUUID);
 
     buffer_requirement_info.sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS;
     buffer_requirement_info.pNext = NULL;
