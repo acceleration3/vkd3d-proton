@@ -830,6 +830,11 @@ void vkd3d_free_device_memory(struct d3d12_device *device, const struct vkd3d_de
     }
 
     VK_CALL(vkFreeMemory(device->vk_device, allocation->vk_memory, NULL));
+
+    if (device->memory_info.vram_account &&
+            (device->memory_properties.memoryTypes[allocation->vk_memory_type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+        vkd3d_vram_gate->give(device->memory_info.vram_account, allocation->size);
+
     rebar_budget = !!(device->memory_info.rebar_budget_mask & (1u << allocation->vk_memory_type));
 
     if (rebar_budget || (vkd3d_config_flags & VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET))
@@ -864,6 +869,14 @@ void vkd3d_free_device_memory(struct d3d12_device *device, const struct vkd3d_de
         vkd3d_report_memory_budget(device);
 }
 
+const struct vkd3d_vram_gate *vkd3d_vram_gate;
+static __thread bool vkd3d_vram_refused;
+
+void vkd3d_set_vram_gate(const void *gate)
+{
+    vkd3d_vram_gate = gate;
+}
+
 static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
         VkDeviceSize size, VkMemoryPropertyFlags type_flags, const uint32_t base_type_mask,
         void *pNext, bool respect_budget, struct vkd3d_device_memory_allocation *allocation)
@@ -875,8 +888,10 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
     VkDeviceSize *type_current, heap_size;
     VkMemoryAllocateInfo allocate_info;
     bool rebar_budget;
+    bool vram_gated;
     VkResult vr;
 
+    vkd3d_vram_refused = false;
     device_local_mask = 0u;
     candidate_mask = 0u;
 
@@ -991,10 +1006,25 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
                 allocate_info.allocationSize, device->device_info.vulkan_1_1_properties.maxMemoryAllocationSize);
     }
 
+    vram_gated = memory_info->vram_account &&
+            (memory_props->memoryTypes[allocate_info.memoryTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vram_gated && !vkd3d_vram_gate->take(memory_info->vram_account, size))
+    {
+        WARN("Device-local allocation of %"PRIu64" KiB refused: over the guest's video memory cap.\n", size / 1024);
+        vkd3d_vram_refused = true;
+        if (rebar_budget && respect_budget)
+            pthread_mutex_unlock(&memory_info->budget_lock);
+        return E_OUTOFMEMORY;
+    }
+
     /* In case we get address binding callbacks, ensure driver knows it's not a sparse bind that happens async. */
     vkd3d_address_binding_tracker_mark_user_thread();
 
     vr = VK_CALL(vkAllocateMemory(device->vk_device, &allocate_info, NULL, &allocation->vk_memory));
+
+    if (vr != VK_SUCCESS && vram_gated)
+        vkd3d_vram_gate->give(memory_info->vram_account, size);
 
     if (vr == VK_SUCCESS)
     {
@@ -1076,7 +1106,7 @@ HRESULT vkd3d_allocate_device_memory(struct d3d12_device *device,
     hr = vkd3d_try_allocate_device_memory(device, size, type_flags,
             type_mask, pNext, respect_budget, allocation);
 
-    if (FAILED(hr) && (type_flags & optional_flags))
+    if (FAILED(hr) && (type_flags & optional_flags) && !vkd3d_vram_refused)
     {
         /* If we're allocating pure DEVICE_LOCAL_BIT memory, we should never need to fallback allocate ourselves.
          * Allocating ReBAR can still fail. */

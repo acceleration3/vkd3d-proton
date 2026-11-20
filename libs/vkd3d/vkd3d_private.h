@@ -4409,8 +4409,24 @@ struct vkd3d_memory_info_domain
     uint32_t rt_ds_type_mask;
 };
 
+/* accel-virt: the embedder's cap on device-local memory, mirroring its AvVramGate. */
+struct vkd3d_vram_gate
+{
+    uint32_t size;
+    void *self;
+    void *(*open)(void *self, const uint8_t *gpu_uuid);
+    int (*take)(void *account, uint64_t bytes);
+    void (*give)(void *account, uint64_t bytes);
+    void (*close)(void *self, void *account);
+    uint64_t (*free_bytes)(void *account);
+    uint64_t (*cap)(void *account);
+};
+
+extern const struct vkd3d_vram_gate *vkd3d_vram_gate;
+
 struct vkd3d_memory_info
 {
+    void *vram_account;
     /* Includes normal system memory, but also resizable BAR memory.
      * Only types which have HOST_VISIBLE_BIT can be in this domain.
      * For images, we only include memory types which are LINEAR tiled. */

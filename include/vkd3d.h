@@ -192,6 +192,9 @@ ULONG vkd3d_resource_incref(ID3D12Resource *resource);
 
 /* A buffer heap over pages mapped at `address`, imported as the dma-buf `fd`
  * (which the caller keeps). */
+/* The embedder's cap on device-local memory: a table of callbacks, kept by pointer. */
+void vkd3d_set_vram_gate(const void *gate);
+
 HRESULT vkd3d_open_heap_from_dmabuf(ID3D12Device *device, void *address, int fd, UINT64 size,
         REFIID iid, void **heap);
 
