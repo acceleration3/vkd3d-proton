@@ -392,9 +392,19 @@ static HRESULT d3d12_root_signature_create_graphics_layout(struct d3d12_root_sig
     ranges[0].stageFlags = layout->push_constant_range.stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS;
     ranges[0].offset = layout->push_constant_range.offset;
     ranges[0].size = layout->push_constant_range.size;
+    if (!device->device_info.device_generated_commands_features.deviceGeneratedCommands &&
+            !(layout->flags & VKD3D_ROOT_SIGNATURE_USE_PUSH_CONSTANT_UNIFORM_BLOCK))
+    {
+        ranges[0].stageFlags |= VK_SHADER_STAGE_VERTEX_BIT;
+        layout->push_constant_range.stageFlags |= VK_SHADER_STAGE_VERTEX_BIT;
+    }
     layout->vk_push_stages = ranges[0].stageFlags;
     if (ranges[0].stageFlags)
+    {
+        if (ranges[0].size < sizeof(VkDeviceAddress))
+            ranges[0].size = layout->push_constant_range.size = sizeof(VkDeviceAddress);
         count++;
+    }
 
     offset = ranges[0].stageFlags ? align(ranges[0].offset + ranges[0].size, 8) : 0;
     if (d3d12_device_emulates_line_coverage(device) && offset + 2 * sizeof(float) <= limits->maxPushConstantsSize)
@@ -2780,11 +2790,16 @@ static void d3d12_pipeline_state_free_spirv_code_debug(struct d3d12_pipeline_sta
 
 static void d3d12_pipeline_state_free_spirv_code(struct d3d12_pipeline_state *state)
 {
-    unsigned int i;
+    unsigned int i, j;
     if (d3d12_pipeline_state_is_graphics(state))
     {
         for (i = 0; i < state->graphics.stage_count; i++)
         {
+            for (j = 0; j < VKD3D_INDIRECT_STATE_MODE_COUNT; j++)
+            {
+                vkd3d_shader_free_shader_code(&state->graphics.indirect_code[j][i]);
+                memset(&state->graphics.indirect_code[j][i], 0, sizeof(state->graphics.indirect_code[j][i]));
+            }
             vkd3d_shader_free_shader_code(&state->graphics.code[i]);
             /* Keep meta. */
             state->graphics.code[i].code = NULL;
@@ -3457,6 +3472,9 @@ static HRESULT vkd3d_late_compile_shader_stages(struct d3d12_pipeline_state *sta
         /* We'll keep the module around here, no need to keep code/size pairs around for this.
          * If we're in a situation where late compile is relevant, we're using PSO cached blobs,
          * so we never expect to serialize out SPIR-V either way. */
+        if (!state->device->device_info.device_generated_commands_features.deviceGeneratedCommands)
+            continue;
+
         vkd3d_shader_free_shader_code(&graphics->code[i]);
         graphics->code[i].code = NULL;
         graphics->code[i].size = 0;
@@ -6371,7 +6389,9 @@ static HRESULT d3d12_pipeline_state_finish_graphics(struct d3d12_pipeline_state 
     if (graphics->multiview.dynamic_mask)
         state->pso_is_fully_dynamic = false;
 
-    if (!state->pso_is_fully_dynamic)
+    if (!state->pso_is_fully_dynamic ||
+            (state->pipeline_type == VKD3D_PIPELINE_TYPE_GRAPHICS &&
+             !state->device->device_info.device_generated_commands_features.deviceGeneratedCommands))
     {
         /* If we got here successfully without SPIR-V code,
          * it means we'll need to defer compilation from DXBC -> SPIR-V.
@@ -6663,9 +6683,11 @@ HRESULT d3d12_pipeline_state_create(struct d3d12_device *device, VkPipelineBindP
      * For graphics pipelines, we have to keep VkShaderModules around in case we need fallback pipelines.
      * If we keep the SPIR-V around in memory, we can always create shader modules on-demand in case we
      * need to actually create fallback pipelines. This avoids unnecessary memory bloat. */
-    if (desc_cached_pso->blob.CachedBlobSizeInBytes ||
+    if (!(object->pipeline_type == VKD3D_PIPELINE_TYPE_GRAPHICS &&
+            !device->device_info.device_generated_commands_features.deviceGeneratedCommands) &&
+            (desc_cached_pso->blob.CachedBlobSizeInBytes ||
             (device->disk_cache.library && (device->disk_cache.library->flags & VKD3D_PIPELINE_LIBRARY_FLAG_SHADER_IDENTIFIER)) ||
-            VKD3D_CONFIG_FLAG_IS_SET(PIPELINE_LIBRARY_NO_SERIALIZE_SPIRV))
+            VKD3D_CONFIG_FLAG_IS_SET(PIPELINE_LIBRARY_NO_SERIALIZE_SPIRV)))
         d3d12_pipeline_state_free_spirv_code(object);
     else
         d3d12_pipeline_state_destroy_shader_modules(object, device);
@@ -6976,7 +6998,7 @@ VkPipeline d3d12_pipeline_state_create_pipeline_variant(struct d3d12_pipeline_st
     *dynamic_state_flags = d3d12_graphics_pipeline_state_init_dynamic_state(state, &dynamic_create_info,
             dynamic_state_buffer, key);
 
-    if (!library_flags && graphics->library)
+    if (!library_flags && graphics->library && !(key && key->indirect_state))
     {
         if (d3d12_pipeline_state_link_pipeline_variant(state, key, dsv_format,
                 vk_cache, *dynamic_state_flags, &vk_pipeline) == VK_SUCCESS)
@@ -6991,6 +7013,12 @@ VkPipeline d3d12_pipeline_state_create_pipeline_variant(struct d3d12_pipeline_st
     if (!(graphics->stage_flags & VK_SHADER_STAGE_MESH_BIT_EXT))
     {
         vkd3d_vertex_input_pipeline_desc_init(&vertex_input_desc, state, key, *dynamic_state_flags);
+        if (key && key->indirect_state >= VKD3D_INDIRECT_STATE_PULL_VERTICES)
+        {
+            vertex_input_desc.vi_info.vertexAttributeDescriptionCount = 0;
+            vertex_input_desc.vi_info.vertexBindingDescriptionCount = 0;
+            vertex_input_desc.vi_divisor_info.vertexBindingDivisorCount = 0;
+        }
         vkd3d_vertex_input_pipeline_desc_prepare(&vertex_input_desc);
 
         tessellation_info.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
@@ -7083,10 +7111,19 @@ VkPipeline d3d12_pipeline_state_create_pipeline_variant(struct d3d12_pipeline_st
 
         for (i = 0; i < graphics->stage_count; i++)
         {
-            if (stages[i].module == VK_NULL_HANDLE && graphics->code[i].code)
+            if (key->indirect_state && graphics->indirect_code[key->indirect_state][i].code)
             {
-                if (FAILED(hr = d3d12_pipeline_state_create_shader_module(device,
-                        &stages[i].module, &graphics->code[i])))
+                stages[i].module = VK_NULL_HANDLE;
+                if (stages[i].pNext == &graphics->identifier_create_infos[i])
+                    stages[i].pNext = graphics->identifier_create_infos[i].pNext;
+            }
+
+            if (stages[i].module == VK_NULL_HANDLE && (graphics->code[i].code ||
+                    (key->indirect_state && graphics->indirect_code[key->indirect_state][i].code)))
+            {
+                if (FAILED(hr = d3d12_pipeline_state_create_shader_module(device, &stages[i].module,
+                        key->indirect_state && graphics->indirect_code[key->indirect_state][i].code ?
+                        &graphics->indirect_code[key->indirect_state][i] : &graphics->code[i])))
                 {
                     /* This is kind of fatal and should only happen for out-of-memory. */
                     ERR("Unexpected failure (hr %x) in creating fallback SPIR-V module.\n", (int)hr);
@@ -7283,6 +7320,181 @@ VkPipeline d3d12_pipeline_state_get_pipeline(struct d3d12_pipeline_state *state,
 
     *dynamic_state_flags = state->graphics.pipeline_dynamic_states;
     return state->graphics.pipeline;
+}
+
+static int d3d12_pipeline_state_rewrite_indirect_code(struct d3d12_pipeline_state *state, uint32_t mode,
+        const struct vkd3d_shader_code *compiled);
+
+static int d3d12_pipeline_state_build_indirect_code(struct d3d12_pipeline_state *state, uint32_t mode)
+{
+    struct d3d12_graphics_pipeline_state *graphics = &state->graphics;
+    struct vkd3d_shader_code compiled[VKD3D_MAX_SHADER_STAGES];
+    unsigned int i, j;
+    int status;
+
+    memset(compiled, 0, sizeof(compiled));
+    for (i = 0; i < graphics->stage_count; i++)
+    {
+        if (graphics->code[i].code)
+            continue;
+        if (!graphics->cached_desc.bytecode[i].BytecodeLength ||
+                !(graphics->cached_desc.bytecode_duped_mask & (1u << i)) ||
+                FAILED(vkd3d_compile_shader_stage(state, state->device, graphics->cached_desc.bytecode_stages[i],
+                        &graphics->cached_desc.bytecode[i], &compiled[i], NULL)))
+        {
+            for (j = 0; j < i; j++)
+                vkd3d_shader_free_shader_code(&compiled[j]);
+            return AV_LC_MALFORMED;
+        }
+    }
+
+    status = d3d12_pipeline_state_rewrite_indirect_code(state, mode, compiled);
+    for (i = 0; i < graphics->stage_count; i++)
+        vkd3d_shader_free_shader_code(&compiled[i]);
+    return status;
+}
+
+static int d3d12_pipeline_state_rewrite_indirect_code(struct d3d12_pipeline_state *state, uint32_t mode,
+        const struct vkd3d_shader_code *compiled)
+{
+    struct vkd3d_vertex_pull_attribute attributes[D3D12_VS_INPUT_REGISTER_COUNT];
+    struct d3d12_graphics_pipeline_state *graphics = &state->graphics;
+    struct vkd3d_shader_code *code = graphics->indirect_code[mode];
+    const struct vkd3d_shader_code *spirv;
+    struct vkd3d_vertex_pull_layout layout;
+    const uint32_t *source;
+    size_t source_count;
+    unsigned int i, j;
+    uint32_t *words;
+    size_t count;
+    int status;
+
+    memset(&layout, 0, sizeof(layout));
+    if (mode != VKD3D_INDIRECT_STATE_ROOT)
+    {
+        if (graphics->attribute_count > ARRAY_SIZE(attributes))
+            return AV_LC_TOO_MANY;
+        for (i = 0; i < graphics->attribute_count; i++)
+        {
+            attributes[i].location = graphics->attributes[i].location;
+            attributes[i].slot = graphics->attributes[i].binding;
+            attributes[i].format = graphics->attributes[i].format;
+            attributes[i].offset = graphics->attributes[i].offset;
+            attributes[i].per_instance = graphics->input_rates[attributes[i].slot] == VK_VERTEX_INPUT_RATE_INSTANCE;
+            attributes[i].divisor = 1;
+            for (j = 0; j < graphics->instance_divisor_count; j++)
+                if (graphics->instance_divisors[j].binding == attributes[i].slot)
+                    attributes[i].divisor = graphics->instance_divisors[j].divisor;
+            if (!vkd3d_vertex_pull_supports_format(attributes[i].format))
+                return AV_LC_REFUSED_TYPE;
+        }
+        layout.vertex_table_offset = align(state->root_signature->graphics.push_constant_range.size, 16);
+        layout.index_offset = layout.vertex_table_offset + VKD3D_INDIRECT_STATE_INDEX_WORD * sizeof(uint32_t);
+        layout.draw_offset = layout.vertex_table_offset + VKD3D_INDIRECT_STATE_DRAW_WORD * sizeof(uint32_t);
+        layout.pull_indices = mode == VKD3D_INDIRECT_STATE_PULL_INDICES;
+        layout.attribute_count = graphics->attribute_count;
+        layout.attributes = attributes;
+    }
+
+    for (i = 0; i < graphics->stage_count; i++)
+    {
+        spirv = graphics->code[i].code ? &graphics->code[i] : &compiled[i];
+        words = NULL;
+        count = 0;
+        status = vkd3d_rewrite_push_block_to_address(spirv->code, spirv->size / sizeof(uint32_t), &words, &count);
+        if (status != AV_LC_OK && status != AV_LC_UNCHANGED)
+            return status;
+        if (status == AV_LC_OK)
+        {
+            code[i].code = words;
+            code[i].size = count * sizeof(uint32_t);
+            code[i].meta = graphics->code[i].meta;
+        }
+        else if (!graphics->code[i].code)
+        {
+            if (!(words = vkd3d_malloc(spirv->size)))
+                return AV_LC_NO_MEMORY;
+            memcpy(words, spirv->code, spirv->size);
+            code[i].code = words;
+            code[i].size = spirv->size;
+            code[i].meta = graphics->code[i].meta;
+        }
+
+        if (mode == VKD3D_INDIRECT_STATE_ROOT || graphics->cached_desc.bytecode_stages[i] != VK_SHADER_STAGE_VERTEX_BIT)
+            continue;
+
+        source = code[i].code ? code[i].code : graphics->code[i].code;
+        source_count = (code[i].code ? code[i].size : graphics->code[i].size) / sizeof(uint32_t);
+        words = NULL;
+        count = 0;
+        if ((status = vkd3d_rewrite_vertex_pull(source, source_count, &layout, &words, &count)) != AV_LC_OK)
+            return status;
+        vkd3d_shader_free_shader_code(&code[i]);
+        code[i].code = words;
+        code[i].size = count * sizeof(uint32_t);
+        code[i].meta = graphics->code[i].meta;
+    }
+
+    return AV_LC_OK;
+}
+
+VkPipeline d3d12_pipeline_state_get_indirect_state_pipeline(struct d3d12_pipeline_state *state, uint32_t mode,
+        const struct vkd3d_dynamic_state *dyn_state, const struct vkd3d_format *dsv_format,
+        uint32_t *dynamic_state_flags)
+{
+    const struct vkd3d_vk_device_procs *vk_procs = &state->device->vk_procs;
+    struct d3d12_graphics_pipeline_state *graphics = &state->graphics;
+    struct vkd3d_pipeline_key pipeline_key;
+    VkPipeline vk_pipeline;
+
+    if (state->pipeline_type != VKD3D_PIPELINE_TYPE_GRAPHICS || !mode || mode >= VKD3D_INDIRECT_STATE_MODE_COUNT)
+        return VK_NULL_HANDLE;
+
+    rwlock_lock_write(&state->lock);
+    if (!graphics->indirect_code_ready[mode])
+    {
+        graphics->indirect_code_status[mode] = d3d12_pipeline_state_build_indirect_code(state, mode);
+        graphics->indirect_code_ready[mode] = true;
+    }
+    rwlock_unlock_write(&state->lock);
+
+    if (graphics->indirect_code_status[mode] != AV_LC_OK)
+    {
+        FIXME("Pipeline %p cannot take per-command state of mode %u (%d), ExecuteIndirect draws nothing.\n",
+                state, mode, graphics->indirect_code_status[mode]);
+        return VK_NULL_HANDLE;
+    }
+
+    memset(&pipeline_key, 0, sizeof(pipeline_key));
+    if (graphics->primitive_topology_type != D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH &&
+            graphics->primitive_topology_type != D3D12_PRIMITIVE_TOPOLOGY_TYPE_UNDEFINED)
+        pipeline_key.dynamic_topology = true;
+    else
+        pipeline_key.topology = dyn_state->primitive_topology;
+    pipeline_key.dsv_format = dsv_format ? dsv_format->vk_format : VK_FORMAT_UNDEFINED;
+    pipeline_key.view_mask = graphics->multiview.dynamic_mask ? dyn_state->view_mask : 0;
+    if (!(graphics->pipeline_dynamic_states & VKD3D_DYNAMIC_STATE_RASTERIZATION_SAMPLES))
+    {
+        pipeline_key.rasterization_samples = dyn_state->rasterization_samples
+              ? dyn_state->rasterization_samples : graphics->ms_desc.rasterizationSamples;
+    }
+    pipeline_key.indirect_state = mode;
+
+    if ((vk_pipeline = d3d12_pipeline_state_find_compiled_pipeline(state, &pipeline_key, dynamic_state_flags)))
+        return vk_pipeline;
+
+    if (!(vk_pipeline = d3d12_pipeline_state_create_pipeline_variant(state,
+            &pipeline_key, dsv_format, VK_NULL_HANDLE, 0, dynamic_state_flags)))
+    {
+        ERR("Failed to create the per-command state pipeline.\n");
+        return VK_NULL_HANDLE;
+    }
+
+    if (d3d12_pipeline_state_put_pipeline_to_cache(state, &pipeline_key, vk_pipeline, *dynamic_state_flags))
+        return vk_pipeline;
+
+    VK_CALL(vkDestroyPipeline(state->device->vk_device, vk_pipeline, NULL));
+    return d3d12_pipeline_state_find_compiled_pipeline(state, &pipeline_key, dynamic_state_flags);
 }
 
 VkPipeline d3d12_pipeline_state_get_or_create_pipeline(struct d3d12_pipeline_state *state,
@@ -8125,6 +8337,12 @@ static HRESULT vkd3d_bindless_state_init_heap(struct vkd3d_bindless_state *bindl
     uint32_t minimum_buffer_offset, minimum_metadata_offset;
     uint32_t minimum_unified_buffer_descriptor_size_log2;
     bool unified_buffer_descriptor = false;
+
+    if (!device->device_info.device_generated_commands_features.deviceGeneratedCommands)
+    {
+        INFO("No device generated commands: ExecuteIndirect is emulated over push constants, which the heap path does not have.\n");
+        return E_NOTIMPL;
+    }
 
     if (!device->device_info.descriptor_heap_features.descriptorHeap)
         return E_NOTIMPL;

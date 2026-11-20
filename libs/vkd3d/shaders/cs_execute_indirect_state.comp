@@ -1,0 +1,177 @@
+#version 450
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 64) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Words {
+	uint values[];
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer OutWords {
+	uint values[];
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Count {
+	uint value;
+};
+
+struct TranslationRange
+{
+	uint64_t guest;
+	uint64_t bytes;
+	uint64_t host;
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Translation {
+	uint count;
+	uint pad;
+	uint64_t unmapped;
+	TranslationRange ranges[];
+};
+
+layout(push_constant) uniform Registers
+{
+	Words setup_va;
+	Words args_va;
+	Count count_va;
+	OutWords draws_va;
+	OutWords blocks_va;
+	Translation translation_va;
+	uint arg_stride_words;
+	uint block_words;
+	uint op_and_draw_words;
+	uint max_commands;
+};
+
+#define op_count (op_and_draw_words & 0xffffu)
+#define draw_words (op_and_draw_words >> 16u)
+
+const uint OP_COPY = 0u;
+const uint OP_INDEX = 1u;
+const uint OP_ADDRESS = 2u;
+const uint OP_DRAW = 3u;
+const uint OP_VERTEX_VIEW = 4u;
+const uint OP_INDEX_VIEW = 5u;
+const uint OP_DRAW_PULLED = 6u;
+const uint NO_DESTINATION = 0xffffffffu;
+
+uint64_t translate(uint64_t va, out uint64_t room)
+{
+	room = ~0ul;
+	if (uvec2(translation_va) == uvec2(0))
+		return va;
+
+	uint lo_index = 0u;
+	uint hi_index = translation_va.count;
+	while (lo_index < hi_index)
+	{
+		uint mid = (lo_index + hi_index) >> 1u;
+		if (translation_va.ranges[mid].guest <= va)
+			lo_index = mid + 1u;
+		else
+			hi_index = mid;
+	}
+
+	if (lo_index != 0u)
+	{
+		TranslationRange range = translation_va.ranges[lo_index - 1u];
+		uint64_t into = va - range.guest;
+		if (into < range.bytes)
+		{
+			room = range.bytes - into;
+			return range.host + into;
+		}
+	}
+
+	room = 0ul;
+	return translation_va.unmapped;
+}
+
+void main()
+{
+	uint command = gl_GlobalInvocationID.x;
+	if (command >= max_commands)
+		return;
+
+	uint count = max_commands;
+	if (uvec2(count_va) != uvec2(0))
+		count = min(count_va.value, max_commands);
+
+	uint draw_base = command * draw_words;
+	if (command >= count)
+	{
+		for (uint i = 0u; i < draw_words; i++)
+			draws_va.values[draw_base + i] = 0u;
+		return;
+	}
+
+	uint src_base = command * arg_stride_words;
+	uint dst_base = command * block_words;
+
+	for (uint i = 0u; i < block_words; i++)
+		blocks_va.values[dst_base + i] = setup_va.values[i];
+
+	for (uint op = 0u; op < op_count; op++)
+	{
+		uint at = block_words + 4u * op;
+		uint type = setup_va.values[at];
+		uint src = setup_va.values[at + 1u];
+		uint dst = setup_va.values[at + 2u];
+		uint words = setup_va.values[at + 3u];
+
+		if (type == OP_COPY)
+		{
+			for (uint i = 0u; i < words; i++)
+				blocks_va.values[dst_base + dst + i] = args_va.values[src_base + src + i];
+		}
+		else if (type == OP_INDEX)
+		{
+			blocks_va.values[dst_base + dst] = command;
+		}
+		else if (type == OP_ADDRESS)
+		{
+			uint64_t va = uint64_t(args_va.values[src_base + src]) | (uint64_t(args_va.values[src_base + src + 1u]) << 32);
+			uint64_t room;
+			uint64_t host = translate(va, room);
+			blocks_va.values[dst_base + dst] = uint(host & 0xfffffffful);
+			blocks_va.values[dst_base + dst + 1u] = uint(host >> 32);
+		}
+		else if (type == OP_VERTEX_VIEW || type == OP_INDEX_VIEW)
+		{
+			uint64_t va = uint64_t(args_va.values[src_base + src]) | (uint64_t(args_va.values[src_base + src + 1u]) << 32);
+			uint64_t room;
+			uint64_t host = translate(va, room);
+			uint bytes = uint(min(uint64_t(args_va.values[src_base + src + 2u]), room));
+			uint last = args_va.values[src_base + src + 3u];
+			if (va == 0ul)
+				bytes = 0u;
+			if (type == OP_INDEX_VIEW)
+				last = last == 57u ? 2u : 4u;
+			blocks_va.values[dst_base + dst] = uint(host & 0xfffffffful);
+			blocks_va.values[dst_base + dst + 1u] = uint(host >> 32);
+			blocks_va.values[dst_base + dst + 2u] = bytes;
+			blocks_va.values[dst_base + dst + 3u] = last;
+		}
+		else if (type == OP_DRAW)
+		{
+			for (uint i = 0u; i < draw_words; i++)
+				draws_va.values[draw_base + i] = i < words ? args_va.values[src_base + src + i] : 0u;
+			if (dst != NO_DESTINATION)
+				blocks_va.values[dst_base + dst + 2u] = args_va.values[src_base + src + words - 1u];
+		}
+		else if (type == OP_DRAW_PULLED)
+		{
+			draws_va.values[draw_base + 0u] = args_va.values[src_base + src + 0u];
+			draws_va.values[draw_base + 1u] = args_va.values[src_base + src + 1u];
+			draws_va.values[draw_base + 2u] = 0u;
+			draws_va.values[draw_base + 3u] = args_va.values[src_base + src + 4u];
+			for (uint i = 4u; i < draw_words; i++)
+				draws_va.values[draw_base + i] = 0u;
+			blocks_va.values[dst_base + dst + 0u] = args_va.values[src_base + src + 2u];
+			blocks_va.values[dst_base + dst + 1u] = args_va.values[src_base + src + 3u];
+			blocks_va.values[dst_base + dst + 2u] = args_va.values[src_base + src + 4u];
+		}
+	}
+}

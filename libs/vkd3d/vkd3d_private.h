@@ -2339,6 +2339,19 @@ struct d3d12_graphics_pipeline_state_cached_desc
     uint32_t patch_location_offset;
 };
 
+enum vkd3d_indirect_state_mode
+{
+    VKD3D_INDIRECT_STATE_NONE = 0,
+    VKD3D_INDIRECT_STATE_ROOT,
+    VKD3D_INDIRECT_STATE_PULL_VERTICES,
+    VKD3D_INDIRECT_STATE_PULL_INDICES,
+    VKD3D_INDIRECT_STATE_MODE_COUNT,
+};
+
+#define VKD3D_INDIRECT_STATE_INDEX_WORD (4 * D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)
+#define VKD3D_INDIRECT_STATE_DRAW_WORD (VKD3D_INDIRECT_STATE_INDEX_WORD + 4)
+#define VKD3D_INDIRECT_STATE_PULL_BYTES ((VKD3D_INDIRECT_STATE_DRAW_WORD + 4) * 4)
+
 struct d3d12_graphics_pipeline_state
 {
     struct vkd3d_shader_spec_info spec_info[VKD3D_MAX_SHADER_STAGES];
@@ -2388,6 +2401,10 @@ struct d3d12_graphics_pipeline_state
 
     bool line_coverage;
     uint32_t line_coverage_offset;
+
+    struct vkd3d_shader_code indirect_code[VKD3D_INDIRECT_STATE_MODE_COUNT][VKD3D_MAX_SHADER_STAGES];
+    int indirect_code_status[VKD3D_INDIRECT_STATE_MODE_COUNT];
+    bool indirect_code_ready[VKD3D_INDIRECT_STATE_MODE_COUNT];
 
     /* vkd3d_dynamic_state_flag */
     uint32_t explicit_dynamic_states;
@@ -2564,6 +2581,7 @@ struct vkd3d_pipeline_key
     uint32_t view_mask;
 
     bool dynamic_topology;
+    uint32_t indirect_state;
 };
 
 bool d3d12_pipeline_state_has_replaced_shaders(struct d3d12_pipeline_state *state);
@@ -2573,6 +2591,9 @@ VkPipeline d3d12_pipeline_state_get_or_create_pipeline(struct d3d12_pipeline_sta
         const struct vkd3d_dynamic_state *dyn_state, const struct vkd3d_format *dsv_format,
         uint32_t *dynamic_state_flags);
 VkPipeline d3d12_pipeline_state_get_pipeline(struct d3d12_pipeline_state *state,
+        const struct vkd3d_dynamic_state *dyn_state, const struct vkd3d_format *dsv_format,
+        uint32_t *dynamic_state_flags);
+VkPipeline d3d12_pipeline_state_get_indirect_state_pipeline(struct d3d12_pipeline_state *state, uint32_t mode,
         const struct vkd3d_dynamic_state *dyn_state, const struct vkd3d_format *dsv_format,
         uint32_t *dynamic_state_flags);
 VkPipeline d3d12_pipeline_state_create_pipeline_variant(struct d3d12_pipeline_state *state,
@@ -3301,6 +3322,7 @@ struct d3d12_command_list_iteration_indirect_meta
 {
     bool need_compute_to_indirect_barrier;
     bool need_compute_to_cbv_barrier;
+    bool need_compute_to_graphics_barrier;
     bool need_preprocess_barrier;
 };
 
@@ -4090,6 +4112,16 @@ struct d3d12_command_signature
     } state_template;
     bool requires_state_template;
     enum vkd3d_pipeline_type pipeline_type;
+
+    struct
+    {
+        uint32_t ops[4 * (D3D12_MAX_ROOT_COST + D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT + 2)];
+        uint32_t op_count;
+        uint32_t root_bytes;
+        uint32_t mode;
+        bool indexed;
+        bool active;
+    } emulated;
 
     struct d3d12_device *device;
 
@@ -5195,6 +5227,20 @@ struct vkd3d_execute_indirect_args
     VkDeviceAddress translation_va;
 };
 
+struct vkd3d_execute_indirect_state_args
+{
+    VkDeviceAddress setup_va;
+    VkDeviceAddress args_va;
+    VkDeviceAddress count_va;
+    VkDeviceAddress draws_va;
+    VkDeviceAddress blocks_va;
+    VkDeviceAddress translation_va;
+    uint32_t arg_stride_words;
+    uint32_t block_words;
+    uint32_t op_and_draw_words;
+    uint32_t max_commands;
+};
+
 struct vkd3d_execute_indirect_pipeline
 {
     VkPipeline vk_pipeline;
@@ -5207,6 +5253,8 @@ struct vkd3d_execute_indirect_ops
     struct vkd3d_execute_indirect_pipeline *pipelines;
     size_t pipelines_count;
     size_t pipelines_size;
+    VkPipelineLayout vk_state_pipeline_layout;
+    VkPipeline vk_state_pipeline;
     pthread_mutex_t mutex;
 };
 
@@ -5412,6 +5460,33 @@ static inline uint32_t vkd3d_meta_get_multi_dispatch_indirect_workgroup_size(voi
 
 HRESULT vkd3d_meta_get_execute_indirect_pipeline(struct vkd3d_meta_ops *meta_ops,
         uint32_t patch_command_count, struct vkd3d_execute_indirect_info *info);
+HRESULT vkd3d_meta_get_execute_indirect_state_pipeline(struct vkd3d_meta_ops *meta_ops,
+        struct vkd3d_execute_indirect_info *info);
+int vkd3d_rewrite_push_block_to_address(const uint32_t *words, size_t count, uint32_t **out_words, size_t *out_count);
+
+struct vkd3d_vertex_pull_attribute
+{
+    uint32_t location;
+    uint32_t slot;
+    VkFormat format;
+    uint32_t offset;
+    uint32_t divisor;
+    bool per_instance;
+};
+
+struct vkd3d_vertex_pull_layout
+{
+    uint32_t vertex_table_offset;
+    uint32_t index_offset;
+    uint32_t draw_offset;
+    bool pull_indices;
+    uint32_t attribute_count;
+    const struct vkd3d_vertex_pull_attribute *attributes;
+};
+
+bool vkd3d_vertex_pull_supports_format(VkFormat format);
+int vkd3d_rewrite_vertex_pull(const uint32_t *words, size_t count, const struct vkd3d_vertex_pull_layout *layout,
+        uint32_t **out_words, size_t *out_count);
 
 void vkd3d_meta_get_sampler_feedback_resolve_pipeline(struct vkd3d_meta_ops *meta_ops,
         enum vkd3d_sampler_feedback_resolve_type type, struct vkd3d_sampler_feedback_resolve_info *info, bool heap);
