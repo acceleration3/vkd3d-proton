@@ -140,6 +140,9 @@ void vkd3d_abandon_waits(ID3D12Device *device);
 HRESULT vkd3d_open_heap_from_dmabuf(ID3D12Device *device, void *address, int fd, UINT64 size,
         REFIID iid, void **heap);
 
+HRESULT vkd3d_create_exported_heap(ID3D12Device *device, const D3D12_HEAP_DESC *desc, int *fd,
+        REFIID iid, void **heap);
+
 /* A shared committed texture's memory as an OPAQUE_FD (the caller owns `fd`),
  * and the image it was made as: the image's pNext and pQueueFamilyIndices are
  * null, and the arrays here stand in for the view format list and the queue

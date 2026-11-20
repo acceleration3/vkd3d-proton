@@ -1538,6 +1538,7 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     VkBufferDeviceAddressAlignmentAllocateInfoVALVE alignment_info;
     VkMemoryPriorityAllocateInfoEXT priority_info;
+    VkExportMemoryAllocateInfo export_info;
     VkMemoryRequirements memory_requirements;
     VkMemoryAllocateFlagsInfo flags_info;
     VkMemoryPropertyFlags type_flags;
@@ -1732,6 +1733,14 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
         priority_info.pNext = NULL;
         priority_info.priority = info->vk_memory_priority;
         vk_prepend_struct(&flags_info, &priority_info);
+    }
+
+    if (info->export_dma_buf)
+    {
+        export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+        export_info.pNext = NULL;
+        export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+        vk_prepend_struct(&flags_info, &export_info);
     }
 
     if (host_ptr && info->has_import_fd)
@@ -2355,7 +2364,7 @@ static bool vkd3d_memory_info_allow_suballocate(struct d3d12_device *device,
         const struct vkd3d_allocate_memory_info *info)
 {
     /* pNext implies dedicated allocation or similar. Host pointer implies external memory import. */
-    if (info->pNext || info->host_ptr)
+    if (info->pNext || info->host_ptr || info->export_dma_buf)
         return false;
 
     /* We must never suballocate these. */
@@ -2481,6 +2490,7 @@ HRESULT vkd3d_allocate_heap_memory(struct d3d12_device *device, struct vkd3d_mem
     alloc_info.host_ptr = info->host_ptr;
     alloc_info.has_import_fd = info->has_import_fd;
     alloc_info.import_fd = info->import_fd;
+    alloc_info.export_dma_buf = info->export_dma_buf;
     alloc_info.vk_memory_priority = info->vk_memory_priority;
     alloc_info.explicit_global_buffer_usage = info->explicit_global_buffer_usage;
 

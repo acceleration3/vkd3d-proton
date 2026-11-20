@@ -7701,6 +7701,48 @@ HRESULT vkd3d_open_heap_from_dmabuf(ID3D12Device *device, void *address, int fd,
     return return_interface(&object->ID3D12Heap_iface, &IID_ID3D12Heap, riid, heap);
 }
 
+HRESULT vkd3d_create_exported_heap(ID3D12Device *device, const D3D12_HEAP_DESC *desc, int *fd,
+        REFIID riid, void **heap)
+{
+    const struct vkd3d_vk_device_procs *vk_procs;
+    VkMemoryGetFdInfoKHR fd_info;
+    struct d3d12_device *impl;
+    struct d3d12_heap *object;
+    HRESULT hr;
+
+    if (!device || !desc || !fd || !heap || !desc->SizeInBytes)
+        return E_INVALIDARG;
+
+    *fd = -1;
+    *heap = NULL;
+    impl = impl_from_ID3D12Device((d3d12_device_iface *)device);
+    vk_procs = &impl->vk_procs;
+    if (!impl->vk_info.KHR_external_memory_fd || !impl->vk_info.EXT_external_memory_dma_buf ||
+            !vk_procs->vkGetMemoryFdKHR)
+        return E_NOTIMPL;
+
+    if (FAILED(hr = d3d12_heap_create_exported(impl, desc, &object)))
+        return hr;
+
+    if (object->allocation.chunk || !object->allocation.device_allocation.vk_memory)
+    {
+        ID3D12Heap1_Release(&object->ID3D12Heap_iface);
+        return E_FAIL;
+    }
+
+    fd_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+    fd_info.pNext = NULL;
+    fd_info.memory = object->allocation.device_allocation.vk_memory;
+    fd_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    if (VK_CALL(vkGetMemoryFdKHR(impl->vk_device, &fd_info, fd)) != VK_SUCCESS)
+    {
+        *fd = -1;
+        ID3D12Heap1_Release(&object->ID3D12Heap_iface);
+        return E_FAIL;
+    }
+    return return_interface(&object->ID3D12Heap_iface, &IID_ID3D12Heap, riid, heap);
+}
+
 static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromFileMapping(d3d12_device_iface *iface,
         HANDLE file_mapping, REFIID riid, void **heap)
 {
