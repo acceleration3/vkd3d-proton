@@ -3272,6 +3272,12 @@ HRESULT vkd3d_pipeline_library_init_disk_cache(struct vkd3d_pipeline_library_dis
         vkd3d_strlcat(cache->read_path, sizeof(cache->read_path), ".");
         vkd3d_strlcat(cache->read_path, sizeof(cache->read_path), app_name_str);
     }
+    {
+        const VkPhysicalDeviceProperties *properties = &device->device_info.properties2.properties;
+        char gpu[32];
+        snprintf(gpu, sizeof(gpu), ".%04x-%04x", properties->vendorID, properties->deviceID);
+        vkd3d_strlcat(cache->read_path, sizeof(cache->read_path), gpu);
+    }
     vkd3d_strlcat(cache->read_path, sizeof(cache->read_path), ".cache");
 
 #ifdef _WIN32
